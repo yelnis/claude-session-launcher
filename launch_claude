@@ -1,0 +1,1128 @@
+#!/usr/bin/env python3
+"""launch_claude - start named Claude Code sessions in tmux (optionally behind ttyd).
+
+Single file, standard library only. See README.md for details.
+"""
+import sys
+
+MIN_PYTHON = (3, 8)
+if sys.version_info < MIN_PYTHON:
+    sys.stderr.write("Python %d.%d or newer is required (found %s).\n"
+                     % (MIN_PYTHON[0], MIN_PYTHON[1], sys.version.split()[0]))
+    sys.exit(1)
+
+import argparse  # noqa: E402
+import configparser  # noqa: E402
+import datetime  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import re  # noqa: E402
+import shlex  # noqa: E402
+import shutil  # noqa: E402
+import socket  # noqa: E402
+import stat  # noqa: E402
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+import time  # noqa: E402
+import uuid  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+__version__ = "0.1.0"
+
+PROG = "launch_claude"
+COMMANDS = ("start", "stop", "open", "add", "set", "forget", "list", "help")
+RESERVED = ("all",) + COMMANDS
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+MODES = ("new", "resume", "continue")
+
+DEFAULT_PORT_MIN = 7700
+DEFAULT_PORT_MAX = 7799
+
+# Timings (seconds). Module-level so tests can shorten them.
+READY_TIMEOUT = 60       # how long to wait for the Claude Code prompt
+STALL_TIMEOUT = 20       # give up early if the screen has not changed for this long
+POLL_INTERVAL = 1.0
+KEY_DELAY = 0.5          # pause between typing a slash command and pressing Enter
+COMMAND_DELAY = 1.0      # pause between two slash commands
+
+READY_RE = re.compile(r"\? for shortcuts|shift\+tab to cycle")
+TRUST_RE = re.compile(r"trust this folder|trust the files", re.IGNORECASE)
+SHELLS = ("bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh")
+
+# tmux session options used to recognise the sessions this tool started.
+OPT_KIND = "@launch_claude"            # "agent" or "once"
+OPT_DIR = "@launch_claude_dir"
+OPT_PORT = "@launch_claude_port"
+OPT_STARTED = "@launch_claude_started"
+
+USAGE = """\
+Usage:
+  launch_claude start <id>...            start registered agents
+  launch_claude start --autostart        start every agent with autostart=1 (use this from cron @reboot)
+  launch_claude <id>                     shortcut for: start <id>
+  launch_claude open [options] [<id>] [dir]
+                                         open a new or registered agent; registers it unless --once
+  launch_claude add <id> [options]       register only (does not start)
+  launch_claude set <id> [options]       change saved settings
+  launch_claude forget <id>              remove the registration
+  launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
+  launch_claude list [--running|--autostart]
+  launch_claude help | -h | --help       show this help
+  launch_claude --version                show the version
+
+open options:
+  --resume           resume the last conversation of this agent (this launch only)
+  --continue, -c     continue the latest conversation in the directory and rename it to <id>
+  --once             throwaway: always a new conversation, not registered, auto id (once-HHMMSS)
+                     if <id> is omitted, no ttyd by default, cleaned up when claude exits
+  --with-ttyd        serve the session with ttyd
+  --without-ttyd     tmux only, no port (alias: --no-ttyd)
+  --port <n>         ttyd port (implies ttyd; default: first free port in the configured range)
+  --dir <path>       work directory (same as the 2nd positional argument; default: current dir)
+  --autostart        mark the agent for 'start --autostart'
+
+add / set options:
+  --dir <path>  --port <n>  --with-ttyd | --without-ttyd
+  --mode new|resume|continue             conversation used by 'start' (default: new)
+  --autostart | --no-autostart
+
+Files:
+  settings   ${XDG_CONFIG_HOME:-~/.config}/launch_claude/config
+  agents     ${XDG_CONFIG_HOME:-~/.config}/launch_claude/agents/<id>.conf
+  state      ${XDG_STATE_HOME:-~/.local/state}/launch_claude/
+
+Environment:
+  REMOTE_CONTROL=0       do not send /remote-control after start
+  TTYD_CREDENTIAL=u:p    protect ttyd with basic auth (ttyd -c)
+"""
+
+
+class Error(Exception):
+    """A user-facing error. main() prints it and exits with status 1."""
+
+
+def info(msg):
+    print(msg)
+
+
+def warn(msg):
+    print("Warning: " + msg, file=sys.stderr)
+
+
+# --------------------------------------------------------------------------
+# Paths and settings
+# --------------------------------------------------------------------------
+
+def config_dir():
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return Path(base) / PROG
+
+
+def state_dir():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return Path(base) / PROG
+
+
+def agents_dir():
+    return config_dir() / "agents"
+
+
+def new_parser():
+    # interpolation=None: values such as "pa%ss" must be read back unchanged.
+    return configparser.ConfigParser(interpolation=None)
+
+
+def read_ini(path, section):
+    """Return the section of an INI file as a dict ({} if the file or section is missing)."""
+    parser = new_parser()
+    try:
+        with open(str(path), encoding="utf-8") as f:
+            parser.read_file(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, configparser.Error) as e:
+        raise Error("cannot read %s: %s" % (path, e)) from None
+    if not parser.has_section(section):
+        return {}
+    return dict(parser.items(section))
+
+
+def write_ini(path, section, values):
+    """Write one section atomically (temporary file + os.replace)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    parser = new_parser()
+    parser.add_section(section)
+    for key, value in values.items():
+        if value is not None:
+            parser.set(section, key, str(value))
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            parser.write(f)
+        os.replace(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def as_bool(value, default=False):
+    if value is None or str(value).strip() == "":
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def as_int(value, default, name):
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        raise Error("%s must be a number (got '%s')" % (name, value)) from None
+
+
+def load_settings():
+    """Global settings: the config file, overridden by environment variables."""
+    path = config_dir() / "config"
+    raw = read_ini(path, PROG)
+    settings = {
+        "claude_config_dir": None,
+        "port_min": as_int(raw.get("port_min"), DEFAULT_PORT_MIN, "port_min"),
+        "port_max": as_int(raw.get("port_max"), DEFAULT_PORT_MAX, "port_max"),
+        "remote_control": as_bool(raw.get("remote_control"), True),
+        "ttyd_credential": None,
+    }
+    # No claude_config_dir in the config file: follow the caller's environment,
+    # and if that is empty too, leave CLAUDE_CONFIG_DIR alone (Claude Code default).
+    ccd = (raw.get("claude_config_dir") or "").strip() or os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    if ccd:
+        settings["claude_config_dir"] = os.path.abspath(os.path.expanduser(ccd))
+
+    cred = (raw.get("ttyd_credential") or "").strip()
+    if cred:
+        try:
+            mode = stat.S_IMODE(os.stat(str(path)).st_mode)
+            if mode & 0o077:
+                warn("%s contains ttyd_credential but its permissions are %o. Run: chmod 600 %s"
+                     % (path, mode, path))
+        except OSError:
+            pass
+    settings["ttyd_credential"] = os.environ.get("TTYD_CREDENTIAL", "").strip() or cred or None
+
+    if "REMOTE_CONTROL" in os.environ:
+        settings["remote_control"] = as_bool(os.environ["REMOTE_CONTROL"], True)
+    return settings
+
+
+# --------------------------------------------------------------------------
+# Registry (agents/<id>.conf) and runtime state (<id>.state)
+# --------------------------------------------------------------------------
+
+def is_valid_id(agent_id):
+    return bool(ID_RE.match(agent_id)) and agent_id not in RESERVED
+
+
+def require_valid_id(agent_id):
+    if not is_valid_id(agent_id):
+        raise Error("invalid ID '%s' (use letters, digits, '-' and '_'; reserved words: %s)"
+                    % (agent_id, ", ".join(RESERVED)))
+
+
+def agent_path(agent_id):
+    return agents_dir() / (agent_id + ".conf")
+
+
+def load_agent(agent_id):
+    """Return the saved settings of an agent, or None if it is not registered."""
+    raw = read_ini(agent_path(agent_id), "agent")
+    if not raw:
+        return None
+    ttyd = as_bool(raw.get("ttyd"), False)
+    port = as_int(raw.get("port"), None, "port of [%s]" % agent_id) if ttyd else None
+    mode = (raw.get("mode") or "new").strip().lower()
+    if mode not in MODES:
+        warn("[%s] unknown mode '%s', using 'new'" % (agent_id, mode))
+        mode = "new"
+    directory = (raw.get("dir") or "").strip()
+    return {
+        "dir": os.path.abspath(os.path.expanduser(directory)) if directory else "",
+        "ttyd": ttyd and port is not None,
+        "port": port,
+        "mode": mode,
+        "autostart": as_bool(raw.get("autostart"), False),
+    }
+
+
+def save_agent(agent_id, agent):
+    write_ini(agent_path(agent_id), "agent", {
+        "dir": agent["dir"],
+        "ttyd": 1 if agent["ttyd"] else 0,
+        "port": agent["port"] if agent["ttyd"] else None,
+        "mode": agent["mode"],
+        "autostart": 1 if agent["autostart"] else 0,
+    })
+
+
+def delete_agent(agent_id):
+    for path in (agent_path(agent_id), state_path(agent_id)):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def registered_ids():
+    try:
+        names = [p.name[:-len(".conf")] for p in agents_dir().iterdir()
+                 if p.is_file() and p.name.endswith(".conf")]
+    except FileNotFoundError:
+        return []
+    return sorted(n for n in names if ID_RE.match(n))
+
+
+def state_path(agent_id):
+    return state_dir() / (agent_id + ".state")
+
+
+def load_state(agent_id):
+    return read_ini(state_path(agent_id), "state")
+
+
+def save_state(agent_id, **updates):
+    state = load_state(agent_id)
+    state.update(updates)
+    write_ini(state_path(agent_id), "state", state)
+
+
+def describe(agent):
+    parts = ["dir=" + agent["dir"]]
+    parts.append("port=%s" % agent["port"] if agent["ttyd"] else "ttyd=off")
+    parts.append("mode=" + agent["mode"])
+    parts.append("autostart=%d" % (1 if agent["autostart"] else 0))
+    return ", ".join(parts)
+
+
+# --------------------------------------------------------------------------
+# Ports and network
+# --------------------------------------------------------------------------
+
+def port_is_free(port):
+    """True if nothing is listening on the TCP port (checked by binding to it)."""
+    for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        try:
+            s = socket.socket(family, socket.SOCK_STREAM)
+        except OSError:
+            continue  # address family not available on this host
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if family == socket.AF_INET6:
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            s.bind((addr, port))
+        except OSError:
+            return False
+        finally:
+            s.close()
+    return True
+
+
+def reserved_ports(skip_id=None):
+    """Ports saved for registered agents, as {port: id}."""
+    ports = {}
+    for agent_id in registered_ids():
+        if agent_id == skip_id:
+            continue
+        try:
+            agent = load_agent(agent_id)
+        except Error:
+            continue
+        if agent and agent["ttyd"]:
+            ports[agent["port"]] = agent_id
+    return ports
+
+
+def validate_port(port, agent_id):
+    if not 1024 <= port <= 65535:
+        raise Error("invalid port %d (1024-65535)" % port)
+    owner = reserved_ports(skip_id=agent_id).get(port)
+    if owner:
+        raise Error("port %d is already assigned to [%s]" % (port, owner))
+
+
+def pick_free_port(settings, agent_id=None):
+    taken = reserved_ports(skip_id=agent_id)
+    for port in range(settings["port_min"], settings["port_max"] + 1):
+        if port not in taken and port_is_free(port):
+            return port
+    raise Error("no free port in %d-%d" % (settings["port_min"], settings["port_max"]))
+
+
+def host_ip():
+    """The address other machines use to reach this host.
+
+    Connecting a UDP socket only selects a route; no packet is sent.
+    """
+    for target in ("192.0.2.1", "10.255.255.255"):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect((target, 9))
+            ip = s.getsockname()[0]
+            if ip and not ip.startswith("0."):
+                return ip
+        except OSError:
+            pass
+        finally:
+            s.close()
+    return "localhost"
+
+
+# --------------------------------------------------------------------------
+# tmux
+# --------------------------------------------------------------------------
+
+def require(command):
+    if shutil.which(command) is None:
+        hint = " (only needed for sessions served in the browser; try --without-ttyd)" \
+            if command == "ttyd" else ""
+        raise Error("'%s' was not found in PATH. Please install it%s." % (command, hint))
+
+
+def tmux(*args):
+    return subprocess.run(["tmux"] + list(args), stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          universal_newlines=True)
+
+
+def session_exists(name):
+    # "=" asks tmux for an exact match (no prefix matching).
+    return shutil.which("tmux") is not None and tmux("has-session", "-t", "=" + name).returncode == 0
+
+
+def kill_session(name):
+    tmux("kill-session", "-t", "=" + name)
+
+
+def ttyd_session(agent_id):
+    return "ttyd-" + agent_id
+
+
+def managed_sessions():
+    """Running tmux sessions started by this tool, as {name: {kind, dir, port, started}}."""
+    if shutil.which("tmux") is None:
+        return {}
+    # The directory comes last: it is the only field that may contain the separator.
+    fmt = "|".join("#{%s}" % f for f in ("session_name", OPT_KIND, OPT_PORT, OPT_STARTED, OPT_DIR))
+    result = tmux("list-sessions", "-F", fmt)
+    sessions = {}
+    if result.returncode != 0:
+        return sessions
+    for line in result.stdout.splitlines():
+        fields = line.split("|", 4)
+        if len(fields) != 5 or fields[1] not in ("agent", "once"):
+            continue
+        sessions[fields[0]] = {
+            "kind": fields[1],
+            "port": int(fields[2]) if fields[2].isdigit() else None,
+            "started": fields[3],
+            "dir": fields[4],
+        }
+    return sessions
+    for line in result.stdout.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 5 or not fields[1]:
+            continue
+        sessions[fields[0]] = {
+            "kind": fields[1],
+            "dir": fields[2],
+            "port": int(fields[3]) if fields[3].isdigit() else None,
+            "started": fields[4],
+        }
+    return sessions
+
+
+def current_session():
+    """Name of the tmux session this process runs in ('' when not inside tmux)."""
+    if not os.environ.get("TMUX") or shutil.which("tmux") is None:
+        return ""
+    args = ["display-message", "-p"]
+    if os.environ.get("TMUX_PANE"):
+        args += ["-t", os.environ["TMUX_PANE"]]
+    result = tmux(*(args + ["#{session_name}"]))
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def capture_pane(target):
+    result = tmux("capture-pane", "-p", "-t", target)
+    return result.stdout if result.returncode == 0 else ""
+
+
+def pane_command(target):
+    result = tmux("display-message", "-p", "-t", target, "#{pane_current_command}")
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def send_line(target, text):
+    """Type text, then press Enter separately (Claude Code needs the short pause)."""
+    tmux("send-keys", "-t", target, "-l", text)
+    time.sleep(KEY_DELAY)
+    tmux("send-keys", "-t", target, "Enter")
+
+
+def wait_for_ready(target, timeout=None):
+    """Wait until Claude Code shows its input prompt.
+
+    Returns (ready, reason, last_screen). Gives up before the timeout when
+    claude has exited or the screen has stopped changing on another view.
+    """
+    timeout = READY_TIMEOUT if timeout is None else timeout
+    deadline = time.time() + timeout
+    seen_program = False
+    last_screen, last_change = None, time.time()
+    screen = ""
+    while time.time() < deadline:
+        screen = capture_pane(target)
+        if TRUST_RE.search(screen):
+            tmux("send-keys", "-t", target, "Enter")
+            time.sleep(2 * POLL_INTERVAL)
+            last_change = time.time()
+            continue
+        if READY_RE.search(screen):
+            return True, "", screen
+        command = pane_command(target)
+        if command and command not in SHELLS:
+            seen_program = True
+        elif seen_program:
+            return False, "claude exited", screen
+        if screen != last_screen:
+            last_screen, last_change = screen, time.time()
+        elif screen.strip() and time.time() - last_change >= STALL_TIMEOUT:
+            return False, "the screen has not changed for %d seconds" % STALL_TIMEOUT, screen
+        time.sleep(POLL_INTERVAL)
+    return False, "timed out after %d seconds" % timeout, screen
+
+
+def screen_tail(screen, lines=10):
+    rows = [row.rstrip() for row in screen.splitlines() if row.strip()]
+    return "\n".join("    | " + row for row in rows[-lines:])
+
+
+# --------------------------------------------------------------------------
+# Claude Code specifics
+# --------------------------------------------------------------------------
+
+def claude_data_dir(settings):
+    return Path(settings["claude_config_dir"] or os.path.join(os.path.expanduser("~"), ".claude"))
+
+
+def conversation_exists(settings, session_id):
+    """True if a transcript for this session id is on disk."""
+    if not session_id or not re.match(r"^[0-9a-fA-F-]{36}$", session_id):
+        return False
+    projects = claude_data_dir(settings) / "projects"
+    return any(projects.glob("*/%s.jsonl" % session_id))
+
+
+def pretrust_dir(settings, directory):
+    """Mark the directory as trusted in .claude.json so the trust dialog is skipped.
+
+    Best effort: wait_for_ready() also answers the dialog if it still appears.
+    """
+    if settings["claude_config_dir"]:
+        path = Path(settings["claude_config_dir"]) / ".claude.json"
+    else:
+        path = Path(os.path.expanduser("~")) / ".claude.json"
+    try:
+        if not path.parent.is_dir():
+            return False
+        mode = 0o600
+        data = {}
+        if path.exists():
+            mode = stat.S_IMODE(path.stat().st_mode)
+            with open(str(path), encoding="utf-8") as f:
+                data = json.load(f)
+        if not isinstance(data, dict):
+            return False
+        projects = data.setdefault("projects", {})
+        if not isinstance(projects, dict):
+            return False
+        project = projects.setdefault(directory, {})
+        if not isinstance(project, dict):
+            return False
+        if project.get("hasTrustDialogAccepted") is True:
+            return True
+        project["hasTrustDialogAccepted"] = True
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".claude.json.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.chmod(tmp, mode)
+            os.replace(tmp, str(path))
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def build_claude_command(settings, agent_id, mode, session_id):
+    """The shell command typed into the tmux session."""
+    base = "claude"
+    if settings["claude_config_dir"]:
+        base = "CLAUDE_CONFIG_DIR=%s claude" % shlex.quote(settings["claude_config_dir"])
+    name = shlex.quote(agent_id)
+    if mode == "resume":
+        return "%s --resume %s" % (base, shlex.quote(session_id))
+    if mode == "continue":
+        return "%s --continue || %s --name %s" % (base, base, name)
+    return "%s --session-id %s --name %s" % (base, shlex.quote(session_id), name)
+
+
+def self_command():
+    """How to run this very file again (does not rely on the shebang or PATH)."""
+    return [sys.executable or "python3", os.path.realpath(__file__)]
+
+
+def dir_in_use_by(directory, skip_id):
+    """Name of another running managed session that works in this directory, if any."""
+    for name, session in managed_sessions().items():
+        if name != skip_id and session["dir"] == directory:
+            return name
+    return None
+
+
+def check_dir_free(directory, agent_id):
+    """'continue' picks the latest conversation of the directory: refuse to share it."""
+    other = dir_in_use_by(directory, agent_id)
+    if other:
+        raise Error("[%s] is already running in %s; 'continue' would attach to the same "
+                    "conversation. Stop it first: %s stop %s" % (other, directory, PROG, other))
+
+
+# --------------------------------------------------------------------------
+# Start / stop
+# --------------------------------------------------------------------------
+
+def access_text(agent_id, port, ip=None):
+    if port:
+        return "http://%s:%d" % (ip or host_ip(), port)
+    return "tmux attach -t %s" % agent_id
+
+
+def launch_session(settings, agent_id, directory, port, mode, once=False):
+    """Start claude in a new tmux session (plus ttyd when port is set).
+
+    Returns True when the session was started. Raises Error before anything
+    has been started if a precondition fails.
+    """
+    require("tmux")
+    if port:
+        require("ttyd")
+    directory = os.path.realpath(directory)
+
+    if mode == "continue":
+        check_dir_free(directory, agent_id)
+
+    kill_session(ttyd_session(agent_id))  # a leftover of ours may still hold the port
+    if port:
+        for _ in range(10):
+            if port_is_free(port):
+                break
+            time.sleep(0.2)
+        else:
+            raise Error("[%s] port %d is in use by another program" % (agent_id, port))
+
+    session_id = None
+    if mode == "resume":
+        session_id = load_state(agent_id).get("last_session")
+        if not conversation_exists(settings, session_id):
+            info("[%s] no conversation to resume; starting a new one." % agent_id)
+            mode = "new"
+    if mode == "new":
+        session_id = str(uuid.uuid4())
+
+    info("Starting [%s] %s..." % (agent_id, "on port %d" % port if port else "(tmux only, no ttyd)"))
+    if not pretrust_dir(settings, directory):
+        warn("[%s] could not pre-trust %s; the trust dialog will be answered instead."
+             % (agent_id, directory))
+
+    command = build_claude_command(settings, agent_id, mode, session_id)
+    if once:
+        # When claude exits, clean up tmux/ttyd by calling ourselves.
+        cleanup = " ".join(shlex.quote(part) for part in self_command() + ["stop", agent_id])
+        command += "; " + cleanup + " >/dev/null 2>&1"
+
+    result = tmux("new-session", "-d", "-s", agent_id, "-x", "160", "-y", "48", "-c", directory)
+    if result.returncode != 0:
+        raise Error("[%s] tmux could not create the session: %s" % (agent_id, result.stderr.strip()))
+    started = datetime.datetime.now().replace(microsecond=0).isoformat()
+    session = "=" + agent_id
+    pane = session + ":"  # set-option and send-keys need the "=name:" form for an exact match
+    for option, value in ((OPT_KIND, "once" if once else "agent"), (OPT_DIR, directory),
+                          (OPT_PORT, str(port) if port else ""), (OPT_STARTED, started)):
+        tmux("set-option", "-t", pane, option, value)
+
+    if not once:
+        if mode == "new":
+            save_state(agent_id, last_session=session_id, last_started=started)
+        else:
+            save_state(agent_id, last_started=started)
+
+    tmux("send-keys", "-t", pane, "-l", command)
+    tmux("send-keys", "-t", pane, "Enter")
+
+    ready, reason, screen = wait_for_ready(pane)
+    if ready:
+        if mode == "continue":
+            # Name the continued conversation after the ID.
+            send_line(pane, "/rename " + agent_id)
+            time.sleep(COMMAND_DELAY)
+        if settings["remote_control"]:
+            send_line(pane, "/remote-control " + agent_id)
+    elif not session_exists(agent_id):
+        warn("[%s] the session ended right after it was started (%s)." % (agent_id, reason))
+        return False
+    else:
+        warn("[%s] did not reach the input prompt (%s). Skipped /rename and /remote-control.\n"
+             "  Last lines of the screen:\n%s" % (agent_id, reason, screen_tail(screen)))
+
+    if port:
+        socket_path = tmux("display-message", "-p", "-t", pane, "#{socket_path}").stdout.strip()
+        attach = ["tmux"] + (["-S", socket_path] if socket_path else [])
+        attach += ["attach-session", "-t", session]
+        ttyd = ["env", "-u", "TMUX", "ttyd", "-p", str(port), "-W"]
+        if settings["ttyd_credential"]:
+            ttyd += ["-c", settings["ttyd_credential"]]
+        result = tmux("new-session", "-d", "-s", ttyd_session(agent_id), *(ttyd + attach))
+        if result.returncode != 0:
+            warn("[%s] could not start ttyd: %s" % (agent_id, result.stderr.strip()))
+    info(" -> [%s] %s: %s" % (agent_id, "ready" if ready else "started", access_text(agent_id, port)))
+    return True
+
+
+def stop_session(agent_id):
+    """Stop ttyd first and the claude session last (we may be running inside it)."""
+    info("Stopping [%s]..." % agent_id)
+    kill_session(ttyd_session(agent_id))
+    kill_session(agent_id)
+
+
+def start_registered(settings, agent_id, mode=None):
+    """Start one registered agent. Returns 'started', 'running', 'skipped' or 'failed'."""
+    agent = load_agent(agent_id)
+    if agent is None:
+        raise Error("'%s' is not registered. Use: %s open %s  (or: %s add %s)"
+                    % (agent_id, PROG, agent_id, PROG, agent_id))
+    if session_exists(agent_id):
+        info("[%s] is already running: %s" % (agent_id, access_text(agent_id, running_port(agent_id))))
+        return "running"
+    if not agent["dir"] or not os.path.isdir(agent["dir"]):
+        warn("[%s] directory %s not found; skipped." % (agent_id, agent["dir"] or "(not set)"))
+        return "skipped"
+    port = agent["port"] if agent["ttyd"] else None
+    ok = launch_session(settings, agent_id, agent["dir"], port, mode or agent["mode"])
+    return "started" if ok else "failed"
+
+
+def running_port(agent_id):
+    session = managed_sessions().get(agent_id)
+    return session["port"] if session else None
+
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        raise Error("%s\nRun '%s help' for usage." % (message, PROG))
+
+
+def make_parser(command):
+    return Parser(prog="%s %s" % (PROG, command), add_help=False, allow_abbrev=False)
+
+
+def add_ttyd_options(parser):
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--with-ttyd", dest="ttyd", action="store_const", const=True, default=None)
+    group.add_argument("--without-ttyd", "--no-ttyd", dest="ttyd", action="store_const", const=False)
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--dir", dest="directory")
+
+
+def check_ttyd_args(args):
+    if args.port is not None and args.ttyd is False:
+        raise Error("--port cannot be used together with --without-ttyd")
+
+
+def resolve_dir(path):
+    directory = os.path.realpath(os.path.expanduser(path))
+    if not os.path.isdir(directory):
+        raise Error("directory %s not found" % directory)
+    return directory
+
+
+def apply_changes(settings, agent_id, agent, args):
+    """Apply --dir/--port/--with(out)-ttyd/--mode/--autostart to an agent dict.
+
+    Returns True if anything changed.
+    """
+    before = dict(agent)
+    if args.directory is not None:
+        agent["dir"] = resolve_dir(args.directory)
+    if args.port is not None:
+        validate_port(args.port, agent_id)
+        agent["ttyd"], agent["port"] = True, args.port
+    elif args.ttyd is True and not agent["ttyd"]:
+        agent["ttyd"], agent["port"] = True, pick_free_port(settings, agent_id)
+    elif args.ttyd is False:
+        agent["ttyd"], agent["port"] = False, None
+    if getattr(args, "mode", None) is not None:
+        agent["mode"] = args.mode
+    if args.autostart is not None:
+        agent["autostart"] = args.autostart
+    return agent != before
+
+
+def cmd_start(argv):
+    parser = make_parser("start")
+    parser.add_argument("--autostart", action="store_true")
+    parser.add_argument("ids", nargs="*")
+    args = parser.parse_args(argv)
+    if args.autostart and args.ids:
+        raise Error("start: give either IDs or --autostart, not both")
+    if not args.autostart and not args.ids:
+        sys.stderr.write("Error: start needs a target: <id>... or --autostart\n\n" + USAGE)
+        return 1
+    settings = load_settings()
+    if args.autostart:
+        ids = [i for i in registered_ids() if load_agent(i)["autostart"]]
+        if not ids:
+            info("No agent has autostart=1. Mark one with: %s set <id> --autostart" % PROG)
+            return 0
+    else:
+        ids = args.ids
+        for agent_id in ids:
+            if load_agent(agent_id) is None:
+                raise Error("'%s' is not registered. Use: %s open %s  (or: %s add %s)"
+                            % (agent_id, PROG, agent_id, PROG, agent_id))
+    status = 0
+    for agent_id in ids:
+        try:
+            if start_registered(settings, agent_id) in ("skipped", "failed"):
+                status = 1
+        except Error as e:
+            # Keep going: one broken agent must not block the others at boot.
+            sys.stderr.write("Error: %s\n" % e)
+            status = 1
+    return status
+
+
+def cmd_open(argv):
+    parser = make_parser("open")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--continue", "-c", dest="cont", action="store_true")
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--autostart", action="store_const", const=True, default=None)
+    add_ttyd_options(parser)
+    parser.add_argument("positional", nargs="*")
+    args = parser.parse_args(argv)
+
+    if len(args.positional) > 2:
+        raise Error("open: too many arguments: %s" % " ".join(args.positional))
+    agent_id = args.positional[0] if args.positional else None
+    if len(args.positional) == 2:
+        if args.directory is not None:
+            raise Error("open: directory given twice (positional and --dir)")
+        args.directory = args.positional[1]
+    check_ttyd_args(args)
+    if args.resume and args.cont:
+        raise Error("open: --resume and --continue cannot be combined")
+    if args.once:
+        for flag, used in (("--resume", args.resume), ("--continue", args.cont),
+                           ("--autostart", args.autostart)):
+            if used:
+                raise Error("open: --once cannot be combined with %s "
+                            "(--once is always a new, unregistered conversation)" % flag)
+    mode = "resume" if args.resume else "continue" if args.cont else "new"
+    settings = load_settings()
+
+    if args.once:
+        return open_once(settings, agent_id, args)
+
+    if agent_id is None:
+        raise Error("open needs an <id> (or use --once for an automatic one)")
+    require_valid_id(agent_id)
+    agent = load_agent(agent_id)
+    changed = any(v is not None for v in (args.directory, args.port, args.ttyd, args.autostart))
+
+    if session_exists(agent_id):
+        if agent is None:
+            raise Error("a tmux session named '%s' already exists and is not registered here. "
+                        "Choose another ID, or stop it yourself first." % agent_id)
+        if changed:
+            raise Error("[%s] is running; stop it before changing its settings: %s stop %s"
+                        % (agent_id, PROG, agent_id))
+        info("[%s] is already running: %s" % (agent_id, access_text(agent_id, running_port(agent_id))))
+        return 0
+    if agent is None and session_exists(ttyd_session(agent_id)):
+        raise Error("a tmux session named '%s' already exists. Choose another ID."
+                    % ttyd_session(agent_id))
+
+    if mode == "continue":
+        # Check before registering anything, so a refused open leaves no trace.
+        if args.directory is not None or agent is None:
+            target = resolve_dir(args.directory or os.getcwd())
+        else:
+            target = os.path.realpath(agent["dir"])
+        check_dir_free(target, agent_id)
+
+    if agent is None:
+        agent = {"dir": resolve_dir(args.directory or os.getcwd()), "ttyd": False, "port": None,
+                 "mode": "new", "autostart": bool(args.autostart)}
+        if args.port is not None:
+            validate_port(args.port, agent_id)
+            agent["ttyd"], agent["port"] = True, args.port
+        elif args.ttyd is not False:
+            agent["ttyd"], agent["port"] = True, pick_free_port(settings, agent_id)
+        save_agent(agent_id, agent)
+        info("Registered [%s]: %s" % (agent_id, describe(agent)))
+    elif apply_changes(settings, agent_id, agent, args):
+        save_agent(agent_id, agent)
+        info("Saved settings for [%s]: %s" % (agent_id, describe(agent)))
+
+    result = start_registered(settings, agent_id, mode=mode)
+    return 0 if result in ("started", "running") else 1
+
+
+def open_once(settings, agent_id, args):
+    sessions = managed_sessions()
+    if agent_id is None:
+        base = "once-" + time.strftime("%H%M%S")
+        agent_id, n = base, 1
+        while agent_id in sessions or session_exists(agent_id) or load_agent(agent_id) is not None:
+            n += 1
+            agent_id = "%s-%d" % (base, n)
+    else:
+        require_valid_id(agent_id)
+        if load_agent(agent_id) is not None:
+            raise Error("'%s' is a registered agent; --once needs an unused ID" % agent_id)
+        if session_exists(agent_id) or session_exists(ttyd_session(agent_id)):
+            raise Error("a tmux session named '%s' (or '%s') already exists. Choose another ID."
+                        % (agent_id, ttyd_session(agent_id)))
+    directory = resolve_dir(args.directory or os.getcwd())
+    port = None
+    if args.port is not None:
+        validate_port(args.port, agent_id)
+        port = args.port
+    elif args.ttyd is True:
+        port = pick_free_port(settings, agent_id)
+    return 0 if launch_session(settings, agent_id, directory, port, "new", once=True) else 1
+
+
+def parse_add_set(command, argv):
+    parser = make_parser(command)
+    parser.add_argument("id")
+    add_ttyd_options(parser)
+    parser.add_argument("--mode", choices=MODES)
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--autostart", dest="autostart", action="store_const", const=True, default=None)
+    group.add_argument("--no-autostart", dest="autostart", action="store_const", const=False)
+    args = parser.parse_args(argv)
+    check_ttyd_args(args)
+    require_valid_id(args.id)
+    return args
+
+
+def cmd_add(argv):
+    args = parse_add_set("add", argv)
+    settings = load_settings()
+    if load_agent(args.id) is not None:
+        raise Error("'%s' is already registered. Use: %s set %s ..." % (args.id, PROG, args.id))
+    agent = {"dir": resolve_dir(args.directory or os.getcwd()), "ttyd": False, "port": None,
+             "mode": args.mode or "new", "autostart": bool(args.autostart)}
+    if args.port is not None:
+        validate_port(args.port, args.id)
+        agent["ttyd"], agent["port"] = True, args.port
+    elif args.ttyd is not False:
+        agent["ttyd"], agent["port"] = True, pick_free_port(settings, args.id)
+    save_agent(args.id, agent)
+    info("Registered [%s]: %s" % (args.id, describe(agent)))
+    return 0
+
+
+def cmd_set(argv):
+    args = parse_add_set("set", argv)
+    settings = load_settings()
+    agent = load_agent(args.id)
+    if agent is None:
+        raise Error("'%s' is not registered. Use: %s add %s ..." % (args.id, PROG, args.id))
+    if not apply_changes(settings, args.id, agent, args):
+        info("[%s] nothing to change: %s" % (args.id, describe(agent)))
+        return 0
+    save_agent(args.id, agent)
+    info("Saved settings for [%s]: %s" % (args.id, describe(agent)))
+    if session_exists(args.id):
+        info("[%s] is running; the new settings apply from the next start." % args.id)
+    return 0
+
+
+def cmd_forget(argv):
+    parser = make_parser("forget")
+    parser.add_argument("id")
+    args = parser.parse_args(argv)
+    if load_agent(args.id) is None and not agent_path(args.id).exists():
+        raise Error("'%s' is not registered" % args.id)
+    if session_exists(args.id):
+        raise Error("[%s] is running. Stop it first: %s stop %s" % (args.id, PROG, args.id))
+    delete_agent(args.id)
+    info("Forgot [%s]." % args.id)
+    return 0
+
+
+def cmd_stop(argv):
+    parser = make_parser("stop")
+    parser.add_argument("ids", nargs="*")
+    args = parser.parse_args(argv)
+    sessions = managed_sessions()
+    if args.ids:
+        targets = []
+        for agent_id in args.ids:
+            if agent_id in sessions or load_agent(agent_id) is not None:
+                targets.append(agent_id)
+            else:
+                raise Error("'%s' is neither registered nor a running session of %s" % (agent_id, PROG))
+    else:
+        targets = sorted(set(sessions) | set(i for i in registered_ids() if session_exists(i)))
+        if not targets:
+            info("Nothing is running.")
+            return 0
+    # If we are inside one of the targets, stop it last so the others are not left behind.
+    me = current_session()
+    targets.sort(key=lambda name: name == me)
+    for agent_id in targets:
+        if agent_id in sessions or session_exists(agent_id) or session_exists(ttyd_session(agent_id)):
+            stop_session(agent_id)
+        else:
+            info("[%s] is not running." % agent_id)
+    return 0
+
+
+def short_path(path):
+    home = os.path.expanduser("~")
+    if path == home:
+        return "~"
+    if path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
+
+
+def short_time(iso):
+    try:
+        return datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S").strftime("%m/%d %H:%M")
+    except (TypeError, ValueError):
+        return "-"
+
+
+def cmd_list(argv):
+    parser = make_parser("list")
+    parser.add_argument("--running", action="store_true")
+    parser.add_argument("--autostart", action="store_true")
+    args = parser.parse_args(argv)
+    sessions = managed_sessions()
+    ip = None
+    rows, missing = [], False
+
+    def access(port, once):
+        nonlocal ip
+        if port:
+            ip = ip or host_ip()
+            text = "http://%s:%d" % (ip, port)
+        else:
+            text = "tmux only"
+        return text + (" (once)" if once else "")
+
+    for agent_id in registered_ids():
+        try:
+            agent = load_agent(agent_id)
+        except Error as e:
+            warn(str(e))
+            continue
+        if agent is None:
+            continue
+        running = agent_id in sessions or session_exists(agent_id)
+        if (args.running and not running) or (args.autostart and not agent["autostart"]):
+            continue
+        directory = short_path(agent["dir"]) if agent["dir"] else "(not set)"
+        if not agent["dir"] or not os.path.isdir(agent["dir"]):
+            directory += " (!)"
+            missing = True
+        if running:
+            # Show what is actually running, which may differ from edited settings.
+            port = sessions[agent_id]["port"] if agent_id in sessions else agent["port"]
+            where = access(port, False)
+        else:
+            where = "-"
+        rows.append((agent_id, "running" if running else "stopped", where, directory,
+                     agent["mode"], "*" if agent["autostart"] else "-",
+                     short_time(load_state(agent_id).get("last_started"))))
+
+    registered = set(registered_ids())
+    if not args.autostart:
+        for name in sorted(sessions):
+            session = sessions[name]
+            if name in registered:
+                continue
+            rows.append((name, "running", access(session["port"], session["kind"] == "once"),
+                         short_path(session["dir"]) if session["dir"] else "-", "-", "-",
+                         short_time(session["started"])))
+
+    if not rows:
+        info("No agents." if not (args.running or args.autostart) else "No matching agents.")
+        return 0
+    header = ("ID", "STATUS", "ACCESS", "DIR", "MODE", "AUTO", "LAST")
+    widths = [max(len(row[i]) for row in [header] + rows) for i in range(len(header))]
+    for row in [header] + rows:
+        info("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+    if missing:
+        info("(!) directory not found")
+    return 0
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        sys.stderr.write(USAGE)
+        return 1
+    first, rest = argv[0], argv[1:]
+    if first in ("help", "-h", "--help"):
+        sys.stdout.write(USAGE)
+        return 0
+    if first in ("--version", "-V"):
+        print("%s %s" % (PROG, __version__))
+        return 0
+    commands = {"start": cmd_start, "open": cmd_open, "add": cmd_add, "set": cmd_set,
+                "forget": cmd_forget, "stop": cmd_stop, "list": cmd_list}
+    try:
+        if any(arg in ("-h", "--help") for arg in rest):
+            sys.stdout.write(USAGE)
+            return 0
+        if first in commands:  # commands win over IDs of the same name
+            return commands[first](rest)
+        if first.startswith("-") or not ID_RE.match(first):
+            raise Error("unknown command or option '%s'\nRun '%s help' for usage." % (first, PROG))
+        return cmd_start(argv)  # shortcut: launch_claude <id>
+    except Error as e:
+        sys.stderr.write("Error: %s\n" % e)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

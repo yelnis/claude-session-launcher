@@ -1,0 +1,21 @@
+# Global settings for launch_claude.
+# Copy to ${XDG_CONFIG_HOME:-~/.config}/launch_claude/config and edit.
+# Every key is optional; the values below (except the commented ones) are the defaults.
+
+[launch_claude]
+
+# Value for CLAUDE_CONFIG_DIR. Leave it out to use Claude Code's default (~/.claude).
+# claude_config_dir = ~/.claude-work
+
+# Port range searched when an agent with ttyd is registered without --port.
+port_min = 7700
+port_max = 7799
+
+# 1: send "/remote-control <id>" after start. 0: do not.
+# The environment variable REMOTE_CONTROL overrides this.
+remote_control = 1
+
+# Basic auth for ttyd (ttyd -c "user:password"). If you set it here, run
+#   chmod 600 ~/.config/launch_claude/config
+# The environment variable TTYD_CREDENTIAL overrides this.
+# ttyd_credential = user:change-me
