@@ -1,0 +1,22 @@
+# launch_claude: settings for a machine shared with other users.
+#
+# Install as:  ~/.config/launch_claude/config   (then: chmod 600 that file)
+# Every key is explained in config.example.
+#
+# Why: everyone's default port range is 7700-7799 and each user takes the first
+# free port. Ports registered by another user who is not running at the moment
+# look free, so two users can end up with the same port and one of them fails
+# to start. Agree on a separate range per user, for example:
+#
+#   alice  7700-7719
+#   bob    7720-7739
+#
+# And protect ttyd: without a password, anyone on the machine or network who
+# reaches the port can use your terminal.
+
+[launch_claude]
+
+port_min = 7720
+port_max = 7739
+
+ttyd_credential = bob:change-me

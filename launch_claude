@@ -103,7 +103,7 @@ add / set options:
   --mode new|resume|continue             conversation used by 'start' (default: new)
   --autostart | --no-autostart
 
-Files:
+Files (all optional; commented samples: https://github.com/yelnis/claude-session-launcher/tree/main/examples):
   settings   ${XDG_CONFIG_HOME:-~/.config}/launch_claude/config
   agents     ${XDG_CONFIG_HOME:-~/.config}/launch_claude/agents/<id>.conf
   state      ${XDG_STATE_HOME:-~/.local/state}/launch_claude/

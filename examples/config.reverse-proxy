@@ -1,0 +1,45 @@
+# launch_claude: ttyd behind a reverse proxy (nginx, Caddy, ...), an SSH port
+# forward or a VPN.
+#
+# Install as:  ~/.config/launch_claude/config
+# Every key is explained in config.example.
+#
+# The point is that ttyd must not be reachable directly. Otherwise the port can
+# be opened without going through the proxy, and its authentication is bypassed.
+
+[launch_claude]
+
+# Listen on this machine only. launch_claude then prints http://localhost:<port>;
+# it cannot know the public URL of your proxy.
+ttyd_interface = lo
+
+# Authentication is done by the proxy, so the "no password" warning is not needed.
+# (With a loopback interface it is skipped anyway; this matters if you use an
+# interface name or address instead, e.g. ttyd_interface = tailscale0.)
+ttyd_warning = 0
+
+# --- Using it --------------------------------------------------------------
+#
+# SSH port forward (no proxy needed). On your own computer:
+#   ssh -L 7700:localhost:7700 user@server
+# then open http://localhost:7700
+#
+# nginx: one "server" (or one port) per agent. ttyd needs WebSocket upgrade
+# headers. A minimal sketch, NOT tested by this project:
+#
+#   server {
+#       listen 443 ssl;
+#       server_name writer.example.com;
+#       auth_basic "restricted";
+#       auth_basic_user_file /etc/nginx/htpasswd;
+#       location / {
+#           proxy_pass http://127.0.0.1:7700;
+#           proxy_http_version 1.1;
+#           proxy_set_header Upgrade $http_upgrade;
+#           proxy_set_header Connection "upgrade";
+#           proxy_read_timeout 1d;
+#       }
+#   }
+#
+# Serving several agents under paths of one host (/writer/, /coder/) needs
+# "ttyd -b <base-path>", which launch_claude does not set.

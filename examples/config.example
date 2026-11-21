@@ -1,21 +1,55 @@
-# Global settings for launch_claude.
-# Copy to ${XDG_CONFIG_HOME:-~/.config}/launch_claude/config and edit.
-# Every key is optional; the values below (except the commented ones) are the defaults.
+# launch_claude: global settings. Reference for every key.
+#
+# Install as:  ${XDG_CONFIG_HOME:-~/.config}/launch_claude/config
+# The file is optional and so is every key. Lines starting with "#" are comments;
+# the commented-out values below are the defaults (or examples where there is none).
+#
+# Ready-made variants for common cases are next to this file:
+#   config.shared-machine   several users on one machine
+#   config.reverse-proxy    ttyd behind nginx, an SSH port forward or a VPN
 
 [launch_claude]
 
-# Value for CLAUDE_CONFIG_DIR. Leave it out to use Claude Code's default (~/.claude).
+# --- Claude Code -----------------------------------------------------------
+
+# Value for CLAUDE_CONFIG_DIR, for all agents.
+#   not set: the CLAUDE_CONFIG_DIR of the shell that runs launch_claude is used;
+#            if that is empty too, Claude Code's default (~/.claude) applies.
+# One agent can use a different directory: see agents/second-account.conf.
 # claude_config_dir = ~/.claude-work
 
-# Port range searched when an agent with ttyd is registered without --port.
-port_min = 7700
-port_max = 7799
-
-# 1: send "/remote-control <id>" after start. 0: do not.
+# 1: type "/remote-control <id>" once the session is ready. 0: do not.
 # The environment variable REMOTE_CONTROL overrides this.
-remote_control = 1
+# remote_control = 1
+
+# --- ttyd ports --------------------------------------------------------------
+
+# Range searched for a free port when an agent is registered without --port.
+# A port, once chosen, is saved for the agent and does not change.
+# port_min = 7700
+# port_max = 7799
+
+# --- ttyd access -------------------------------------------------------------
+
+# Where ttyd listens (passed to "ttyd -i").
+#   not set            every interface: reachable from the network
+#   lo                 this machine only (for nginx, "ssh -L", ...). "localhost" means the same
+#   127.0.0.1          same as lo
+#   eth0, tailscale0   only the address of that interface (names differ per machine: "ip addr")
+#   192.0.2.10         only that address
+# UNIX socket paths are not supported.
+# URLs printed by launch_claude follow this setting (http://localhost:<port> for lo).
+# ttyd_interface = lo
 
 # Basic auth for ttyd (ttyd -c "user:password"). If you set it here, run
 #   chmod 600 ~/.config/launch_claude/config
 # The environment variable TTYD_CREDENTIAL overrides this.
+# Note: the password is visible in the process list to other users of the
+# machine, and basic auth over plain HTTP is not encrypted.
 # ttyd_credential = user:change-me
+
+# 1: "launch_claude ttyd <id>" warns when ttyd is opened without ttyd_credential
+#    on an interface other than loopback. 0: no warning.
+# launch_claude only knows what it passes to ttyd. If the port is protected some
+# other way (reverse proxy, VPN, firewall), set this to 0.
+# ttyd_warning = 1
