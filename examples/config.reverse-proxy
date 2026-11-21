@@ -6,6 +6,10 @@
 #
 # The point is that ttyd must not be reachable directly. Otherwise the port can
 # be opened without going through the proxy, and its authentication is bypassed.
+#
+# Status: the two settings below are tested. The ways of using them further
+# down are ideas only; nobody has run them with this tool yet. If you need one
+# of them and it does not work, please open an issue.
 
 [launch_claude]
 
@@ -18,14 +22,14 @@ ttyd_interface = lo
 # interface name or address instead, e.g. ttyd_interface = tailscale0.)
 ttyd_warning = 0
 
-# --- Using it --------------------------------------------------------------
+# --- Ideas for using it (not tested) ---------------------------------------
 #
 # SSH port forward (no proxy needed). On your own computer:
 #   ssh -L 7700:localhost:7700 user@server
 # then open http://localhost:7700
 #
 # nginx: one "server" (or one port) per agent. ttyd needs WebSocket upgrade
-# headers. A minimal sketch, NOT tested by this project:
+# headers. A minimal sketch:
 #
 #   server {
 #       listen 443 ssl;

@@ -117,7 +117,7 @@ Ready-made settings for common situations. Each file explains itself in comments
 | see every global setting | [`examples/config.example`](examples/config.example) |
 | see every per-agent setting | [`examples/agents/example.conf`](examples/agents/example.conf) |
 | share the machine with other users (separate port ranges, a ttyd password) | [`examples/config.shared-machine`](examples/config.shared-machine) |
-| put ttyd behind nginx, an SSH port forward or a VPN | [`examples/config.reverse-proxy`](examples/config.reverse-proxy) |
+| put ttyd behind nginx, an SSH port forward or a VPN (the settings are tested; the proxy examples are ideas only) | [`examples/config.reverse-proxy`](examples/config.reverse-proxy) |
 | run an agent without ttyd, and open a browser terminal only when needed | [`examples/agents/tmux-only.conf`](examples/agents/tmux-only.conf) |
 | use a second Claude account for some agents | [`examples/agents/second-account.conf`](examples/agents/second-account.conf) |
 

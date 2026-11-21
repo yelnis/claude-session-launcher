@@ -117,7 +117,7 @@ ID の形式は `^[A-Za-z0-9][A-Za-z0-9_-]*$` です。次の語は予約され�
 | 全体設定の全項目を見たい | [`examples/config.example`](examples/config.example) |
 | エージェントごとの設定の全項目を見たい | [`examples/agents/example.conf`](examples/agents/example.conf) |
 | ほかのユーザーと共用のマシンで使う(ポートの範囲を分ける、ttyd にパスワードを付ける) | [`examples/config.shared-machine`](examples/config.shared-machine) |
-| ttyd を、nginx・SSH のポート転送・VPN の後ろに置く | [`examples/config.reverse-proxy`](examples/config.reverse-proxy) |
+| ttyd を、nginx・SSH のポート転送・VPN の後ろに置く(設定は確認済み。プロキシ側の例は、案の段階) | [`examples/config.reverse-proxy`](examples/config.reverse-proxy) |
 | ttyd なしで動かして、必要なときだけブラウザの端末を開く | [`examples/agents/tmux-only.conf`](examples/agents/tmux-only.conf) |
 | 一部のエージェントで、別の Claude アカウントを使う | [`examples/agents/second-account.conf`](examples/agents/second-account.conf) |
 
