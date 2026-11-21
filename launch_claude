@@ -202,6 +202,7 @@ def load_settings():
         "port_max": as_int(raw.get("port_max"), DEFAULT_PORT_MAX, "port_max"),
         "remote_control": as_bool(raw.get("remote_control"), True),
         "ttyd_credential": None,
+        "ttyd_warning": as_bool(raw.get("ttyd_warning"), True),
     }
     # No claude_config_dir in the config file: follow the caller's environment,
     # and if that is empty too, leave CLAUDE_CONFIG_DIR alone (Claude Code default).
@@ -1123,8 +1124,11 @@ def cmd_ttyd(argv):
     start_ttyd(settings, agent_id, port)
     info("Opened ttyd for [%s]: %s" % (agent_id, access_text(agent_id, port)))
     info("Close it with: %s ttyd %s --off" % (PROG, agent_id))
-    if not settings["ttyd_credential"]:
-        warn("ttyd has no authentication: anyone who can reach port %d can use this terminal." % port)
+    if settings["ttyd_warning"] and not settings["ttyd_credential"]:
+        # We only know what we passed to ttyd; a proxy, VPN or firewall is invisible from here.
+        warn("ttyd was started without a password of its own. Unless port %d is protected some "
+             "other way, anyone who can reach it can use this terminal. "
+             "(Silence this with ttyd_warning = 0 in the config file.)" % port)
     return 0
 
 

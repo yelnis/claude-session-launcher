@@ -411,7 +411,7 @@ def test_ini_round_trip_keeps_percent_signs(lc, tmp_path):
 def test_settings_defaults_without_files(lc):
     settings = lc.load_settings()
     assert settings == {"claude_config_dir": None, "port_min": 7700, "port_max": 7799,
-                        "remote_control": True, "ttyd_credential": None}
+                        "remote_control": True, "ttyd_credential": None, "ttyd_warning": True}
 
 
 def test_settings_from_file_and_environment(lc, monkeypatch, capsys):
@@ -610,7 +610,7 @@ def test_ttyd_opens_on_saved_port_without_changing_settings(lc, workdir, capsys)
     out, err = capsys.readouterr()
     assert lc.fake.ttyd_started == [("a", 7701)]
     assert "Opened ttyd for [a]: http://192.0.2.10:7701" in out and "ttyd a --off" in out
-    assert "no authentication" in err
+    assert "without a password of its own" in err and "ttyd_warning = 0" in err
     assert lc.load_agent("a")["ttyd"] is False  # temporary: the saved setting stays off
 
     lc.main(["list"])
@@ -638,6 +638,16 @@ def test_ttyd_port_option_and_automatic_port(lc, workdir, capsys):
 
 def test_ttyd_no_warning_with_credential(lc, workdir, monkeypatch, capsys):
     monkeypatch.setenv("TTYD_CREDENTIAL", "me:secret")
+    lc.main(["open", "--without-ttyd", "a"])
+    capsys.readouterr()
+    assert lc.main(["ttyd", "a"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_ttyd_warning_can_be_turned_off(lc, workdir, capsys):
+    path = lc.config_dir() / "config"
+    path.parent.mkdir(parents=True)
+    path.write_text("[launch_claude]\nttyd_warning = 0\n")
     lc.main(["open", "--without-ttyd", "a"])
     capsys.readouterr()
     assert lc.main(["ttyd", "a"]) == 0

@@ -150,7 +150,7 @@ def test_ttyd_can_be_opened_and_closed_on_a_running_session(sandbox):
     opened = sandbox.run("ttyd", "quiet")
     assert opened.returncode == 0, opened.stderr
     assert "Opened ttyd for [quiet]: http://" in opened.stdout
-    assert "no authentication" in opened.stderr
+    assert "without a password of its own" in opened.stderr
     assert sorted(sandbox.sessions()) == ["quiet", "ttyd-quiet"]
     assert "http://" in sandbox.run("list").stdout
 
