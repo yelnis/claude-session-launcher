@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Run every check and write the results to reports/check-report.txt.
+
+Usage: tools/check
+
+Runs the syntax check, ruff and the tests (on the current and on the oldest
+supported Python) with uv, and writes one report that ends with the totals.
+The exit status is 0 only if there are no errors and no warnings.
+"""
+import datetime
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+REPORT = ROOT / "reports" / "check-report.txt"
+OLDEST_PYTHON = "3.8"
+LINT_TARGETS = ["launch_claude", "tests", "tools/check"]
+RUFF = ["uvx", "ruff", "check", "--isolated", "--target-version", "py38", "--line-length", "110",
+        "--select", "E,F,W,B"]
+PYTEST = ["--with", "pytest", "pytest", "-v", "-rs", "-p", "no:cacheprovider"]
+
+
+def run(command):
+    try:
+        done = subprocess.run(command, cwd=str(ROOT), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              universal_newlines=True)
+    except OSError as error:
+        return 127, "%s: %s\n" % (command[0], error)
+    return done.returncode, done.stdout
+
+
+def first_line(command):
+    code, output = run(command)
+    lines = output.strip().splitlines()
+    return lines[0] if code == 0 and lines else "(not available)"
+
+
+def count(word, summary):
+    match = re.search(r"(\d+) %s" % word, summary)
+    return int(match.group(1)) if match else 0
+
+
+class Report:
+    def __init__(self):
+        self.lines = []
+        self.rows = []  # (check, result, errors, warnings, note)
+
+    def section(self, title, output):
+        self.lines += ["", "=" * 78, title, "=" * 78, output.rstrip() or "(no output)"]
+
+    def add(self, check, errors, warnings=0, note=""):
+        self.rows.append((check, "ok" if not errors and not warnings else "FAILED", errors, warnings, note))
+
+
+def check_syntax(report):
+    code, output = run([sys.executable, "-m", "py_compile", "launch_claude"])
+    report.section("Syntax (py_compile)", output or "ok")
+    report.add("syntax", 1 if code else 0)
+
+
+def check_lint(report):
+    code, output = run(RUFF + LINT_TARGETS)
+    report.section("Lint (ruff)", output)
+    found = re.search(r"Found (\d+) error", output)
+    report.add("ruff", int(found.group(1)) if found else (1 if code else 0))
+
+
+def check_tests(report, label, python=None):
+    command = ["uv", "run", "--no-project"] + (["--python", python] if python else []) + PYTEST
+    code, output = run(command)
+    report.section("Tests (%s)" % label, output)
+    lines = output.strip().splitlines()
+    summary = lines[-1] if lines else ""
+    errors = count("failed", summary) + count("errors?", summary)
+    if code and not errors:
+        errors = 1  # pytest could not run at all
+    note = "%d passed, %d skipped" % (count("passed", summary), count("skipped", summary))
+    report.add("pytest, %s" % label, errors, count("warnings?", summary), note)
+
+
+def main():
+    report = Report()
+    check_syntax(report)
+    check_lint(report)
+    check_tests(report, "Python " + ".".join(str(part) for part in sys.version_info[:3]))
+    check_tests(report, "Python " + OLDEST_PYTHON, OLDEST_PYTHON)
+
+    errors = sum(row[2] for row in report.rows)
+    warnings = sum(row[3] for row in report.rows)
+    dirty = run(["git", "status", "--porcelain"])[1].strip()
+    head = [
+        "launch_claude check report",
+        "",
+        "Date:    " + datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %z"),
+        "Version: " + first_line([sys.executable, "launch_claude", "--version"]),
+        "Commit:  " + first_line(["git", "log", "-1", "--format=%h %s"]),
+        "Branch:  " + first_line(["git", "rev-parse", "--abbrev-ref", "HEAD"]),
+        "Tree:    " + ("has changes that are not committed:" if dirty else "clean"),
+    ]
+    head += ["         " + line for line in dirty.splitlines()]
+    head += ["Tools:   %s / %s / %s" % (first_line(["tmux", "-V"]), first_line(["ttyd", "--version"]),
+                                        first_line(["uv", "--version"]))]
+    tail = ["", "=" * 78, "Summary", "=" * 78,
+            "%-24s %-7s %6s %8s  %s" % ("check", "result", "errors", "warnings", "")]
+    tail += ["%-24s %-7s %6d %8d  %s" % row for row in report.rows]
+    tail += ["", "RESULT: %s  (errors %d, warnings %d)" % ("PASS" if not errors and not warnings else "FAIL",
+                                                           errors, warnings)]
+    REPORT.parent.mkdir(exist_ok=True)
+    REPORT.write_text("\n".join(head + report.lines + tail) + "\n", encoding="utf-8")
+    print("\n".join(tail[4:]))
+    print("Report: %s" % REPORT)
+    return 0 if not errors and not warnings else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

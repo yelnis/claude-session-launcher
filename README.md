@@ -188,13 +188,19 @@ Details, notes and the exact precedence of each key are in the comments of [`exa
 Only needed if you change the tool. [uv](https://docs.astral.sh/uv/) is used so that nothing is installed globally.
 
 ```bash
-python3 -m py_compile launch_claude
-uvx ruff check --isolated --target-version py38 --line-length 110 --select E,F,W,B launch_claude tests
+tools/check
+```
+
+This runs the syntax check, ruff, and the tests on the current and on the oldest supported Python. Every result, with the totals at the end, is written to `reports/check-report.txt` (not committed).
+
+To run only the tests:
+
+```bash
 uv run --no-project --with pytest pytest                 # current Python
 uv run --no-project --python 3.8 --with pytest pytest    # oldest supported Python
 ```
 
-The integration tests use a private tmux server and a stub `claude`; they are skipped when tmux is not installed.
+What each test checks is listed in [`tests/README.md`](tests/README.md). The integration tests use a private tmux server and a stub `claude`; they are skipped when tmux is not installed.
 
 ## License
 

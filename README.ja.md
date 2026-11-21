@@ -188,13 +188,19 @@ curl -fsSL https://raw.githubusercontent.com/yelnis/claude-session-launcher/main
 ツールを変更するときだけ必要です。グローバルには何も入れないように、[uv](https://docs.astral.sh/uv/) を使います。
 
 ```bash
-python3 -m py_compile launch_claude
-uvx ruff check --isolated --target-version py38 --line-length 110 --select E,F,W,B launch_claude tests
+tools/check
+```
+
+構文の確認、ruff、テスト(手元の Python と、対応する最も古い Python)をまとめて実行します。すべての結果と、末尾の集計は、`reports/check-report.txt` に書かれます(コミットされません)。
+
+テストだけを実行する場合は、次のとおりです。
+
+```bash
 uv run --no-project --with pytest pytest                 # 手元の Python
 uv run --no-project --python 3.8 --with pytest pytest    # 対応する最も古い Python
 ```
 
-結合テストは、専用の tmux サーバーと、スタブの `claude` を使います。tmux がない環境では、スキップされます。
+各テストが何を確認するかは、[`tests/README.md`](tests/README.md)(英語)に一覧があります。結合テストは、専用の tmux サーバーと、スタブの `claude` を使います。tmux がない環境では、スキップされます。
 
 ## ライセンス
 
