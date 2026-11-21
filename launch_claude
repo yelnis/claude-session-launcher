@@ -29,7 +29,7 @@ import time  # noqa: E402
 import uuid  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 PROG = "launch_claude"
 COMMANDS = ("start", "stop", "open", "add", "set", "forget", "list", "ttyd", "help")
