@@ -90,10 +90,12 @@ open options:
   --port <n>         ttyd port (implies ttyd unless --without-ttyd; default: first free port
                      in the configured range)
   --dir <path>       work directory (same as the 2nd positional argument; default: current dir)
+  --claude-config-dir <path>
+                     CLAUDE_CONFIG_DIR for this agent, e.g. a second account ('default' removes it)
   --autostart        mark the agent for 'start --autostart'
 
 add / set options:
-  --dir <path>  --port <n>  --with-ttyd | --without-ttyd
+  --dir <path>  --port <n>  --with-ttyd | --without-ttyd  --claude-config-dir <path>
   --mode new|resume|continue             conversation used by 'start' (default: new)
   --autostart | --no-autostart
 
@@ -195,6 +197,18 @@ def as_int(value, default, name):
         raise Error("%s must be a number (got '%s')" % (name, value)) from None
 
 
+def clean_path(value):
+    value = (value or "").strip()
+    return os.path.abspath(os.path.expanduser(value)) if value else None
+
+
+def agent_settings(settings, agent):
+    """The settings one agent runs with: its own claude_config_dir wins over the global one."""
+    if agent and agent.get("claude_config_dir"):
+        settings = dict(settings, claude_config_dir=agent["claude_config_dir"])
+    return settings
+
+
 def parse_interface(value):
     """ttyd_interface: an interface name or an IP address, passed to 'ttyd -i'."""
     value = (value or "").strip()
@@ -223,9 +237,8 @@ def load_settings():
     }
     # No claude_config_dir in the config file: follow the caller's environment,
     # and if that is empty too, leave CLAUDE_CONFIG_DIR alone (Claude Code default).
-    ccd = (raw.get("claude_config_dir") or "").strip() or os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
-    if ccd:
-        settings["claude_config_dir"] = os.path.abspath(os.path.expanduser(ccd))
+    settings["claude_config_dir"] = (clean_path(raw.get("claude_config_dir"))
+                                     or clean_path(os.environ.get("CLAUDE_CONFIG_DIR")))
 
     cred = (raw.get("ttyd_credential") or "").strip()
     if cred:
@@ -279,6 +292,7 @@ def load_agent(agent_id):
         "port": port,
         "mode": mode,
         "autostart": as_bool(raw.get("autostart"), False),
+        "claude_config_dir": clean_path(raw.get("claude_config_dir")),
     }
 
 
@@ -289,6 +303,7 @@ def save_agent(agent_id, agent):
         "port": agent["port"],  # kept while ttyd is off: reserved for "ttyd <id>" and --with-ttyd
         "mode": agent["mode"],
         "autostart": 1 if agent["autostart"] else 0,
+        "claude_config_dir": agent.get("claude_config_dir"),
     })
 
 
@@ -333,6 +348,8 @@ def describe(agent):
         parts.append("ttyd=off")
     parts.append("mode=" + agent["mode"])
     parts.append("autostart=%d" % (1 if agent["autostart"] else 0))
+    if agent.get("claude_config_dir"):
+        parts.append("claude_config_dir=" + agent["claude_config_dir"])
     return ", ".join(parts)
 
 
@@ -844,7 +861,8 @@ def start_registered(settings, agent_id, mode=None):
         warn("[%s] directory %s not found; skipped." % (agent_id, agent["dir"] or "(not set)"))
         return "skipped"
     port = agent["port"] if agent["ttyd"] else None
-    ok = launch_session(settings, agent_id, agent["dir"], port, mode or agent["mode"])
+    ok = launch_session(agent_settings(settings, agent), agent_id, agent["dir"], port,
+                        mode or agent["mode"])
     return "started" if ok else "failed"
 
 
@@ -872,12 +890,25 @@ def add_ttyd_options(parser):
     group.add_argument("--without-ttyd", "--no-ttyd", dest="ttyd", action="store_const", const=False)
     parser.add_argument("--port", type=int)
     parser.add_argument("--dir", dest="directory")
+    parser.add_argument("--claude-config-dir", dest="claude_config_dir")
+
+
+def config_dir_arg(value):
+    """--claude-config-dir: a path, or 'default' to remove the per-agent setting."""
+    if value.strip().lower() in ("", "default"):
+        return None
+    path = clean_path(value)
+    if not os.path.isdir(path):
+        warn("%s does not exist yet. Log in there first: CLAUDE_CONFIG_DIR=%s claude auth login"
+             % (path, shlex.quote(path)))
+    return path
 
 
 def new_agent(settings, agent_id, args, mode="new"):
     """Settings for a new registration from --dir/--port/--with(out)-ttyd/--autostart."""
     agent = {"dir": resolve_dir(args.directory or os.getcwd()), "ttyd": args.ttyd is not False,
-             "port": None, "mode": mode, "autostart": bool(args.autostart)}
+             "port": None, "mode": mode, "autostart": bool(args.autostart),
+             "claude_config_dir": config_dir_arg(args.claude_config_dir or "")}
     if args.port is not None:
         validate_port(args.port, agent_id)
         agent["port"] = args.port  # with --without-ttyd: reserved for later
@@ -910,6 +941,8 @@ def apply_changes(settings, agent_id, agent, args):
         agent["ttyd"] = True  # --port alone implies ttyd
     if agent["ttyd"] and agent["port"] is None:
         agent["port"] = pick_free_port(settings, agent_id)
+    if args.claude_config_dir is not None:
+        agent["claude_config_dir"] = config_dir_arg(args.claude_config_dir)
     if getattr(args, "mode", None) is not None:
         agent["mode"] = args.mode
     if args.autostart is not None:
@@ -986,7 +1019,8 @@ def cmd_open(argv):
         raise Error("open needs an <id> (or use --once for an automatic one)")
     require_valid_id(agent_id)
     agent = load_agent(agent_id)
-    changed = any(v is not None for v in (args.directory, args.port, args.ttyd, args.autostart))
+    changed = any(v is not None for v in (args.directory, args.port, args.ttyd, args.autostart,
+                                          args.claude_config_dir))
 
     if session_exists(agent_id):
         if agent is None:
@@ -1046,6 +1080,9 @@ def open_once(settings, agent_id, args):
         port = args.port
     elif args.ttyd is True:
         port = pick_free_port(settings, agent_id)
+    if args.claude_config_dir is not None:
+        settings = dict(settings, claude_config_dir=config_dir_arg(args.claude_config_dir)
+                        or settings["claude_config_dir"])
     return 0 if launch_session(settings, agent_id, directory, port, "new", once=True) else 1
 
 

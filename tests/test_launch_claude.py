@@ -69,7 +69,8 @@ def test_add_rejects_reserved_word(lc, workdir, capsys):
 def test_open_registers_and_starts(lc, workdir, capsys):
     assert lc.main(["open", "review"]) == 0
     agent = lc.load_agent("review")
-    assert agent == {"dir": str(workdir), "ttyd": True, "port": 7700, "mode": "new", "autostart": False}
+    assert agent == {"dir": str(workdir), "ttyd": True, "port": 7700, "mode": "new", "autostart": False,
+                     "claude_config_dir": None}
     assert lc.fake.launched == [("review", str(workdir), 7700, "new", False)]
     assert "Registered [review]" in capsys.readouterr().out
 
@@ -212,7 +213,7 @@ def test_add_does_not_start(lc, workdir):
     assert lc.main(["add", "coder", "--port", "7683", "--mode", "continue", "--autostart"]) == 0
     assert lc.fake.launched == []
     assert lc.load_agent("coder") == {"dir": str(workdir), "ttyd": True, "port": 7683,
-                                      "mode": "continue", "autostart": True}
+                                      "mode": "continue", "autostart": True, "claude_config_dir": None}
 
 
 def test_add_twice_is_an_error(lc, workdir, capsys):
@@ -341,7 +342,7 @@ def test_start_autostart_with_nothing_flagged(lc, workdir, capsys):
 def test_command_wins_over_id_of_the_same_name(lc, workdir, capsys):
     # A hand-made registration named like a command must not shadow the command.
     lc.save_agent("list", {"dir": str(workdir), "ttyd": False, "port": None, "mode": "new",
-                           "autostart": False})
+                           "autostart": False, "claude_config_dir": None})
     assert lc.main(["list"]) == 0
     assert lc.fake.launched == []
 
@@ -441,7 +442,7 @@ def test_hand_written_agent_file(lc, tmp_path):
     lc.agents_dir().mkdir(parents=True)
     agent_file(lc, "hand").write_text("# comment\n[agent]\ndir = ~/proj\nttyd = 1\nport = 7711\n")
     assert lc.load_agent("hand") == {"dir": os.path.expanduser("~/proj"), "ttyd": True, "port": 7711,
-                                     "mode": "new", "autostart": False}
+                                     "mode": "new", "autostart": False, "claude_config_dir": None}
 
 
 # ---- launching (real launch_session, tmux command faked) ----------------
@@ -722,3 +723,50 @@ def test_interface_is_passed_to_ttyd(launcher, workdir):
     ttyd = [args for args in launcher.calls if args[0] == "new-session" and "ttyd-a" in args][0]
     start = ttyd.index("ttyd")
     assert ttyd[start:start + 6] == ("ttyd", "-p", "7701", "-W", "-i", "lo")
+
+
+# ---- per-agent claude_config_dir ----------------------------------------
+
+def test_agent_config_dir_is_saved_changed_and_removed(lc, workdir, tmp_path, capsys):
+    work = tmp_path / "claude-work"
+    work.mkdir()
+    assert lc.main(["add", "a", "--claude-config-dir", str(work)]) == 0
+    assert lc.load_agent("a")["claude_config_dir"] == str(work)
+    assert "claude_config_dir=" + str(work) in capsys.readouterr().out
+    assert "claude_config_dir = " + str(work) in agent_file(lc, "a").read_text()
+
+    assert lc.main(["set", "a", "--claude-config-dir", "default"]) == 0
+    assert lc.load_agent("a")["claude_config_dir"] is None
+    assert "claude_config_dir" not in agent_file(lc, "a").read_text()
+
+
+def test_missing_config_dir_only_warns(lc, workdir, tmp_path, capsys):
+    assert lc.main(["add", "a", "--claude-config-dir", str(tmp_path / "nope")]) == 0
+    assert "claude auth login" in capsys.readouterr().err
+    assert lc.load_agent("a")["claude_config_dir"] == str(tmp_path / "nope")
+
+
+def test_agent_config_dir_wins_over_global_one(launcher, workdir, tmp_path):
+    other = tmp_path / "claude-other"
+    (other / "projects" / "-p").mkdir(parents=True)
+    session_id = "11111111-2222-3333-4444-555555555555"
+    (other / "projects" / "-p" / (session_id + ".jsonl")).write_text("{}\n")
+    write_config(launcher, "claude_config_dir = /opt/global-claude\nremote_control = 0\n")
+    launcher.main(["add", "a", "--without-ttyd", "--mode", "resume", "--claude-config-dir", str(other)])
+    launcher.main(["add", "b", "--without-ttyd"])
+    launcher.save_state("a", last_session=session_id)
+
+    assert launcher.main(["start", "a", "b"]) == 0
+    first, second = typed(launcher)
+    # the transcript is looked up in, and claude is started with, the agent's own directory
+    assert first == "CLAUDE_CONFIG_DIR=%s claude --resume %s" % (other, session_id)
+    assert second.startswith("CLAUDE_CONFIG_DIR=/opt/global-claude claude --session-id ")
+    # ... and the work directory is marked as trusted there
+    assert str(workdir) in json.loads((other / ".claude.json").read_text())["projects"]
+
+
+def test_once_accepts_config_dir(launcher, workdir, tmp_path):
+    other = tmp_path / "claude-other"
+    other.mkdir()
+    assert launcher.main(["open", "--once", "--claude-config-dir", str(other), "tmp1"]) == 0
+    assert typed(launcher)[0].startswith("CLAUDE_CONFIG_DIR=%s claude --session-id " % other)
