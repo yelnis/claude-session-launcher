@@ -37,6 +37,10 @@ RESERVED = ("all",) + COMMANDS
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 MODES = ("new", "resume", "continue")
 LOOPBACK = ("lo", "lo0", "127.0.0.1", "::1")
+# Keys understood in the settings files; anything else is reported as a likely typo.
+CONFIG_KEYS = ("claude_config_dir", "port_min", "port_max", "remote_control", "ttyd_credential",
+               "ttyd_interface", "ttyd_warning")
+AGENT_KEYS = ("dir", "ttyd", "port", "mode", "autostart", "claude_config_dir")
 
 DEFAULT_PORT_MIN = 7700
 DEFAULT_PORT_MAX = 7799
@@ -197,6 +201,12 @@ def as_int(value, default, name):
         raise Error("%s must be a number (got '%s')" % (name, value)) from None
 
 
+def warn_unknown_keys(path, raw, known):
+    unknown = sorted(key for key in raw if key not in known)
+    if unknown:
+        warn("%s: unknown key%s %s (ignored)" % (path, "s" if len(unknown) > 1 else "", ", ".join(unknown)))
+
+
 def clean_path(value):
     value = (value or "").strip()
     return os.path.abspath(os.path.expanduser(value)) if value else None
@@ -226,6 +236,7 @@ def load_settings():
     """Global settings: the config file, overridden by environment variables."""
     path = config_dir() / "config"
     raw = read_ini(path, PROG)
+    warn_unknown_keys(path, raw, CONFIG_KEYS)
     settings = {
         "claude_config_dir": None,
         "port_min": as_int(raw.get("port_min"), DEFAULT_PORT_MIN, "port_min"),
@@ -279,6 +290,7 @@ def load_agent(agent_id):
     raw = read_ini(agent_path(agent_id), "agent")
     if not raw:
         return None
+    warn_unknown_keys(agent_path(agent_id), raw, AGENT_KEYS)
     ttyd = as_bool(raw.get("ttyd"), False)
     port = as_int(raw.get("port"), None, "port of [%s]" % agent_id)
     mode = (raw.get("mode") or "new").strip().lower()

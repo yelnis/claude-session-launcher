@@ -770,3 +770,24 @@ def test_once_accepts_config_dir(launcher, workdir, tmp_path):
     other.mkdir()
     assert launcher.main(["open", "--once", "--claude-config-dir", str(other), "tmp1"]) == 0
     assert typed(launcher)[0].startswith("CLAUDE_CONFIG_DIR=%s claude --session-id " % other)
+
+
+# ---- unknown keys -------------------------------------------------------
+
+def test_unknown_keys_are_reported(lc, workdir, capsys):
+    write_config(lc, "ttyd_warnning = 0\nport_min = 7700\n")
+    lc.agents_dir().mkdir(parents=True, exist_ok=True)
+    agent_file(lc, "a").write_text("[agent]\ndir = %s\nautostrat = 1\n" % workdir)
+    assert lc.main(["list"]) == 0
+    err = capsys.readouterr().err
+    assert "unknown key ttyd_warnning (ignored)" in err
+    assert "unknown key autostrat (ignored)" in err
+    assert lc.load_agent("a")["autostart"] is False
+
+
+def test_saved_files_contain_only_known_keys(lc, workdir, tmp_path, capsys):
+    lc.main(["add", "a", "--port", "7701", "--claude-config-dir", str(tmp_path)])
+    capsys.readouterr()
+    assert set(lc.read_ini(agent_file(lc, "a"), "agent")) <= set(lc.AGENT_KEYS)
+    lc.main(["list"])
+    assert capsys.readouterr().err == ""
