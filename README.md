@@ -71,12 +71,14 @@ launch_claude start --autostart        start every agent with autostart=1
 launch_claude <id>                     shortcut for: start <id>
 launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
 launch_claude list [--running|--autostart]
+launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent, for now only
+launch_claude ttyd <id> --off          close it again; the agent keeps running
 launch_claude add <id> [options]       register only (does not start)
 launch_claude set <id> [options]       change saved settings
 launch_claude forget <id>              remove the registration
 ```
 
-IDs match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. These words are reserved and cannot be IDs: `all`, `start`, `stop`, `open`, `add`, `set`, `forget`, `list`, `help`.
+IDs match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. These words are reserved and cannot be IDs: `all`, `start`, `stop`, `open`, `add`, `set`, `forget`, `list`, `ttyd`, `help`.
 
 ### open
 
@@ -86,6 +88,7 @@ launch_claude open review ~/work/repo      # ... in another directory
 launch_claude open --resume review         # resume the last conversation of "review"
 launch_claude open -c review               # continue the latest conversation in the directory, rename it to "review"
 launch_claude open --without-ttyd review   # tmux only, no port
+launch_claude open --without-ttyd --port 7710 review   # tmux only, but keep port 7710 for later
 launch_claude open --port 7710 review      # choose the ttyd port
 launch_claude open --once                  # throwaway session
 launch_claude open --once --with-ttyd tmp  # throwaway session with ttyd and an ID
@@ -96,8 +99,8 @@ launch_claude open --once --with-ttyd tmp  # throwaway session with ttyd and an 
 | `--resume` | Resume the last conversation of this agent. Applies to this launch only |
 | `--continue`, `-c` | Continue the latest conversation in the work directory and rename it to `<id>`. Refused if another agent is running in the same directory |
 | `--once` | Always a new conversation, never registered. Without `<id>` the ID is `once-HHMMSS`. No ttyd by default. tmux and ttyd are cleaned up when claude exits. Cannot be combined with `--resume`, `--continue` or `--autostart` |
-| `--with-ttyd` / `--without-ttyd` (`--no-ttyd`) | Serve with ttyd, or tmux only |
-| `--port <n>` | ttyd port (implies ttyd). Default: the first free port in `port_min`–`port_max` |
+| `--with-ttyd` / `--without-ttyd` (`--no-ttyd`) | Serve with ttyd, or tmux only. `--without-ttyd` keeps a saved or given port, so the same URL is available later |
+| `--port <n>` | ttyd port. Implies ttyd unless `--without-ttyd` is given. Default: the first free port in `port_min`–`port_max` |
 | `--dir <path>` | Work directory (same as the second positional argument). Default: the current directory |
 | `--autostart` | Set `autostart=1` |
 
@@ -121,7 +124,24 @@ Options: `--dir <path>`, `--port <n>`, `--with-ttyd` / `--without-ttyd`, `--mode
 - You must name the targets: IDs or `--autostart`. `start` alone is an error.
 - Agents that are already running are skipped.
 - If the saved directory no longer exists, the agent is skipped with a warning (there is no fallback to `$HOME`).
-- The saved ttyd port must be free; ports held by other programs are never killed.
+- The saved ttyd port must be free; ports held by other programs are never killed. On a machine shared with other users, give each user a different `port_min`–`port_max` range.
+
+### ttyd
+
+Opens a ttyd for an agent that is already running, without restarting claude, and closes it again.
+
+```bash
+launch_claude ttyd review              # open; prints the URL
+launch_claude ttyd review --port 7720  # open on this port
+launch_claude ttyd review --off        # close; the agent keeps running
+```
+
+- The port is `--port`, else the port saved for the agent, else the first free port in the range.
+- This is temporary: the saved setting is not changed, so the next `start` follows `ttyd = 0/1` as before. To always serve an agent, use `set <id> --with-ttyd`.
+- It stays open until you close it or stop the agent. Without `TTYD_CREDENTIAL` / `ttyd_credential` a warning is shown, because the terminal is then open to anyone who can reach the port.
+- Works for `--once` sessions too.
+
+A ttyd is only reported as open when this tool's own ttyd is listening on the port. If the port is taken by another program or user, you get an error instead of a URL.
 
 ### stop / forget
 
@@ -170,7 +190,7 @@ launch_claude open --without-ttyd --autostart myproj   # a new agent
 launch_claude set myproj --without-ttyd --autostart    # a registered agent
 ```
 
-After a reboot only the tmux session is started and no port is used. `/remote-control` is still sent, since it does not depend on ttyd. To see the terminal, use `tmux attach -t myproj`. Note that `--without-ttyd` drops the saved port; if you switch back to ttyd later and want the same URL, pass `--port <n>`.
+After a reboot only the tmux session is started and no port is used. `/remote-control` is still sent, since it does not depend on ttyd. To see the terminal, use `tmux attach -t myproj`, or open a ttyd for a while with `launch_claude ttyd myproj`. A saved port is kept while ttyd is off, so switching back with `--with-ttyd` gives the same URL.
 
 ## Files
 
@@ -191,7 +211,7 @@ Everything works without any of these files. Both kinds of settings file are INI
 | `remote_control` | `1` | Send `/remote-control <id>` after start. Environment variable `REMOTE_CONTROL=0` overrides it |
 | `ttyd_credential` | not set | `user:password` for ttyd basic auth. Environment variable `TTYD_CREDENTIAL` overrides it |
 
-`agents/<id>.conf` keys (section `[agent]`): `dir`, `ttyd` (1/0), `port`, `mode` (`new`/`resume`/`continue`), `autostart` (1/0).
+`agents/<id>.conf` keys (section `[agent]`): `dir`, `ttyd` (1/0), `port` (kept, and reserved, also while `ttyd = 0`), `mode` (`new`/`resume`/`continue`), `autostart` (1/0).
 
 ## Security
 
@@ -210,6 +230,8 @@ Usage:
   launch_claude <id>                     shortcut for: start <id>
   launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
   launch_claude list [--running|--autostart]
+  launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent, for now only (settings unchanged)
+  launch_claude ttyd <id> --off          close it again; the agent keeps running
   launch_claude add <id> [options]       register only (does not start)
   launch_claude set <id> [options]       change saved settings
   launch_claude forget <id>              remove the registration
@@ -222,8 +244,9 @@ open options:
   --once             throwaway: always a new conversation, not registered, auto id (once-HHMMSS)
                      if <id> is omitted, no ttyd by default, cleaned up when claude exits
   --with-ttyd        serve the session with ttyd
-  --without-ttyd     tmux only, no port (alias: --no-ttyd)
-  --port <n>         ttyd port (implies ttyd; default: first free port in the configured range)
+  --without-ttyd     tmux only (alias: --no-ttyd); a saved or given --port is kept for later
+  --port <n>         ttyd port (implies ttyd unless --without-ttyd; default: first free port
+                     in the configured range)
   --dir <path>       work directory (same as the 2nd positional argument; default: current dir)
   --autostart        mark the agent for 'start --autostart'
 

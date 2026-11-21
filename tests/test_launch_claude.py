@@ -147,9 +147,21 @@ def test_open_continue_refuses_shared_directory(lc, workdir, capsys):
     assert lc.load_agent("a") is None
 
 
-def test_port_and_without_ttyd_conflict(lc, workdir, capsys):
-    assert lc.main(["open", "--port", "7701", "--without-ttyd", "a"]) == 1
-    assert "--port cannot be used" in capsys.readouterr().err
+def test_port_with_ttyd_off_is_reserved(lc, workdir, capsys):
+    assert lc.main(["open", "--port", "7701", "--without-ttyd", "a"]) == 0
+    agent = lc.load_agent("a")
+    assert (agent["ttyd"], agent["port"]) == (False, 7701)
+    assert "ttyd=off (port 7701 reserved)" in capsys.readouterr().out
+    assert lc.fake.launched == [("a", str(workdir), None, "new", False)]  # started without ttyd
+    # the reserved port is not handed to anyone else
+    assert lc.main(["add", "b", "--port", "7701"]) == 1
+    lc.main(["add", "c"])
+    assert lc.load_agent("c")["port"] == 7700
+
+
+def test_once_port_needs_ttyd(lc, workdir, capsys):
+    assert lc.main(["open", "--once", "--port", "7701", "--without-ttyd"]) == 1
+    assert "--once saves nothing" in capsys.readouterr().err
 
 
 def test_port_of_another_agent_is_refused(lc, workdir, capsys):
@@ -213,10 +225,20 @@ def test_set_changes_settings(lc, workdir):
     lc.main(["add", "a"])
     assert lc.main(["set", "a", "--autostart", "--mode", "resume", "--without-ttyd"]) == 0
     agent = lc.load_agent("a")
-    assert (agent["autostart"], agent["mode"], agent["ttyd"], agent["port"]) == (True, "resume", False, None)
+    # turning ttyd off keeps the port, so turning it on again gives the same URL
+    assert (agent["autostart"], agent["mode"], agent["ttyd"], agent["port"]) == (True, "resume", False, 7700)
     assert lc.main(["set", "a", "--no-autostart", "--with-ttyd"]) == 0
     agent = lc.load_agent("a")
     assert (agent["autostart"], agent["ttyd"], agent["port"]) == (False, True, 7700)
+
+
+def test_set_port_alone_implies_ttyd_but_not_with_without_ttyd(lc, workdir):
+    lc.main(["add", "a", "--without-ttyd"])
+    assert lc.load_agent("a")["port"] is None
+    lc.main(["set", "a", "--port", "7710", "--without-ttyd"])
+    assert (lc.load_agent("a")["ttyd"], lc.load_agent("a")["port"]) == (False, 7710)
+    lc.main(["set", "a", "--port", "7711"])
+    assert (lc.load_agent("a")["ttyd"], lc.load_agent("a")["port"]) == (True, 7711)
 
 
 def test_set_unknown_agent_is_an_error(lc, capsys):
@@ -441,7 +463,9 @@ def launcher(monkeypatch, tmp_path, workdir):
         calls.append(args)
         code = 0
         if args[0] == "new-session":
-            alive.add(args[args.index("-s") + 1])
+            name = args[args.index("-s") + 1]
+            if module.ttyd_binds or not name.startswith("ttyd-"):
+                alive.add(name)
         elif args[0] == "kill-session":
             alive.discard(args[-1].lstrip("="))
         elif args[0] == "has-session":
@@ -451,7 +475,8 @@ def launcher(monkeypatch, tmp_path, workdir):
     module.calls = calls
     monkeypatch.setattr(module, "tmux", fake_tmux)
     monkeypatch.setattr(module, "require", lambda command: None)
-    monkeypatch.setattr(module, "port_is_free", lambda port: True)
+    module.ttyd_binds = True
+    monkeypatch.setattr(module, "port_is_free", lambda port: not any(n.startswith("ttyd-") for n in alive))
     monkeypatch.setattr(module, "wait_for_ready", lambda target, timeout=None: (True, "", ""))
     monkeypatch.setattr(module, "close_remote_control_dialog", lambda target: False)
     monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
@@ -552,3 +577,88 @@ def test_remote_control_dialog_is_closed_only_on_continue(lc, monkeypatch):
     monkeypatch.setattr(lc, "capture_pane", lambda target: other)
     assert lc.close_remote_control_dialog("=a:") is False
     assert sent == []
+
+
+def port_option_values(module):
+    return [args[-1] for args in module.calls
+            if args[0] == "set-option" and args[-2] == "@launch_claude_port"]
+
+
+def test_ttyd_that_cannot_bind_is_reported_and_session_keeps_running(launcher, workdir, capsys):
+    launcher.ttyd_binds = False  # ttyd exits at once, e.g. someone else took the port
+    launcher.TTYD_TIMEOUT = 0.3
+    assert launcher.main(["open", "--port", "7701", "a"]) == 0
+    out, err = capsys.readouterr()
+    assert "ttyd did not start on port 7701" in err and "runs without ttyd" in err
+    assert "http://" not in out and "tmux attach -t a" in out  # no URL for a port that is not ours
+    port_options = port_option_values(launcher)
+    assert set(port_options) == {""}
+
+
+def test_started_ttyd_records_its_port(launcher, workdir):
+    assert launcher.main(["open", "--port", "7701", "a"]) == 0
+    port_options = port_option_values(launcher)
+    assert port_options[-1] == "7701"
+
+
+# ---- ttyd command -------------------------------------------------------
+
+def test_ttyd_opens_on_saved_port_without_changing_settings(lc, workdir, capsys):
+    lc.main(["open", "--port", "7701", "--without-ttyd", "a"])
+    capsys.readouterr()
+    assert lc.main(["ttyd", "a"]) == 0
+    out, err = capsys.readouterr()
+    assert lc.fake.ttyd_started == [("a", 7701)]
+    assert "Opened ttyd for [a]: http://192.0.2.10:7701" in out and "ttyd a --off" in out
+    assert "no authentication" in err
+    assert lc.load_agent("a")["ttyd"] is False  # temporary: the saved setting stays off
+
+    lc.main(["list"])
+    assert "http://192.0.2.10:7701" in capsys.readouterr().out
+
+    assert lc.main(["ttyd", "a"]) == 0  # second call does nothing
+    assert "already open" in capsys.readouterr().out
+    assert len(lc.fake.ttyd_started) == 1
+
+    assert lc.main(["ttyd", "a", "--off"]) == 0
+    assert "Closed ttyd for [a]" in capsys.readouterr().out
+    assert "ttyd-a" in lc.fake.killed and lc.session_exists("a")
+    lc.main(["list"])
+    assert "tmux only" in capsys.readouterr().out
+
+
+def test_ttyd_port_option_and_automatic_port(lc, workdir, capsys):
+    lc.main(["open", "--without-ttyd", "a"])
+    lc.main(["open", "--once", "tmp1"])
+    assert lc.main(["ttyd", "a", "--port", "7720"]) == 0
+    assert lc.main(["ttyd", "tmp1"]) == 0  # unregistered --once session, no saved port
+    assert lc.fake.ttyd_started == [("a", 7720), ("tmp1", 7700)]
+    assert lc.load_agent("a")["port"] is None
+
+
+def test_ttyd_no_warning_with_credential(lc, workdir, monkeypatch, capsys):
+    monkeypatch.setenv("TTYD_CREDENTIAL", "me:secret")
+    lc.main(["open", "--without-ttyd", "a"])
+    capsys.readouterr()
+    assert lc.main(["ttyd", "a"]) == 0
+    assert capsys.readouterr().err == ""
+
+
+def test_ttyd_errors(lc, workdir, capsys):
+    lc.main(["add", "a", "--without-ttyd"])
+    lc.main(["add", "b", "--port", "7750"])
+    assert lc.main(["ttyd", "a"]) == 1
+    assert "is not running" in capsys.readouterr().err
+    assert lc.main(["ttyd", "nobody"]) == 1
+    assert "neither registered nor a running session" in capsys.readouterr().err
+    lc.fake.run("a", directory=str(workdir))
+    assert lc.main(["ttyd", "a", "--port", "7750"]) == 1
+    assert "already assigned to [b]" in capsys.readouterr().err
+    assert lc.main(["ttyd", "a", "--off", "--port", "7701"]) == 1
+    assert lc.main(["ttyd", "a", "--off"]) == 0
+    assert "ttyd is not open" in capsys.readouterr().out
+    assert lc.fake.ttyd_started == []
+
+
+def test_ttyd_is_reserved(lc):
+    assert not lc.is_valid_id("ttyd")

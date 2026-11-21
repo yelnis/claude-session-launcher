@@ -140,3 +140,23 @@ def test_ttyd_session_is_started_and_stopped(sandbox):
     assert sorted(sandbox.sessions()) == ["ttyd-web", "web"]
     assert sandbox.run("stop", "web").returncode == 0
     assert sandbox.sessions() == []
+
+
+@pytest.mark.skipif(shutil.which("ttyd") is None, reason="ttyd is not installed")
+def test_ttyd_can_be_opened_and_closed_on_a_running_session(sandbox):
+    assert sandbox.run("open", "--without-ttyd", "quiet").returncode == 0
+    assert sandbox.sessions() == ["quiet"]
+
+    opened = sandbox.run("ttyd", "quiet")
+    assert opened.returncode == 0, opened.stderr
+    assert "Opened ttyd for [quiet]: http://" in opened.stdout
+    assert "no authentication" in opened.stderr
+    assert sorted(sandbox.sessions()) == ["quiet", "ttyd-quiet"]
+    assert "http://" in sandbox.run("list").stdout
+
+    closed = sandbox.run("ttyd", "quiet", "--off")
+    assert closed.returncode == 0 and "Closed ttyd" in closed.stdout
+    assert sandbox.sessions() == ["quiet"]  # claude keeps running
+    assert "tmux only" in sandbox.run("list").stdout
+    conf = (sandbox.home / ".config" / "launch_claude" / "agents" / "quiet.conf").read_text()
+    assert "ttyd = 0" in conf  # the saved setting was not changed

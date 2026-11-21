@@ -71,12 +71,14 @@ launch_claude start --autostart        autostart=1 の全員を起動
 launch_claude <id>                     ショートカット(= start <id>)
 launch_claude stop [<id>...]           停止。登録は残す。引数なしは、起動中の全員
 launch_claude list [--running|--autostart]
+launch_claude ttyd <id> [--port <n>]   起動中のエージェントに、一時的に ttyd を開く
+launch_claude ttyd <id> --off          閉じる。エージェントは動いたまま
 launch_claude add <id> [options]       登録のみ(起動しない)
 launch_claude set <id> [options]       保存済みの設定を変更
 launch_claude forget <id>              登録を削除
 ```
 
-ID の形式は `^[A-Za-z0-9][A-Za-z0-9_-]*$` です。次の語は予約されていて、ID には使えません: `all`、`start`、`stop`、`open`、`add`、`set`、`forget`、`list`、`help`。
+ID の形式は `^[A-Za-z0-9][A-Za-z0-9_-]*$` です。次の語は予約されていて、ID には使えません: `all`、`start`、`stop`、`open`、`add`、`set`、`forget`、`list`、`ttyd`、`help`。
 
 ### open
 
@@ -86,6 +88,7 @@ launch_claude open review ~/work/repo      # 別のディレクトリで
 launch_claude open --resume review         # "review" の最後の会話を再開
 launch_claude open -c review               # ディレクトリの最新の会話を続けて、"review" に改名
 launch_claude open --without-ttyd review   # tmux のみ。ポートを使わない
+launch_claude open --without-ttyd --port 7710 review   # tmux のみ。ただしポート 7710 を取っておく
 launch_claude open --port 7710 review      # ttyd のポートを指定
 launch_claude open --once                  # 使い捨てのセッション
 launch_claude open --once --with-ttyd tmp  # ttyd と ID を付けた使い捨てのセッション
@@ -96,8 +99,8 @@ launch_claude open --once --with-ttyd tmp  # ttyd と ID を付けた使い捨�
 | `--resume` | そのエージェントの最後の会話を再開する。その起動だけに効く |
 | `--continue`, `-c` | 作業ディレクトリの最新の会話を続けて、`<id>` に改名する。同じディレクトリで別のエージェントが動いているときは、エラーになる |
 | `--once` | 常に新しい会話。登録しない。`<id>` を省くと、ID は `once-HHMMSS`。既定で ttyd なし。claude の終了時に tmux と ttyd を片付ける。`--resume`、`--continue`、`--autostart` とは併用できない |
-| `--with-ttyd` / `--without-ttyd`(`--no-ttyd`) | ttyd を付ける / tmux のみ |
-| `--port <n>` | ttyd のポート(ttyd を付ける)。既定は、`port_min`〜`port_max` の最初の空き |
+| `--with-ttyd` / `--without-ttyd`(`--no-ttyd`) | ttyd を付ける / tmux のみ。`--without-ttyd` でも、保存済みのポートや指定したポートは残るので、あとで同じ URL を使える |
+| `--port <n>` | ttyd のポート。`--without-ttyd` を付けないかぎり、ttyd を付ける。既定は、`port_min`〜`port_max` の最初の空き |
 | `--dir <path>` | 作業ディレクトリ(2番目の位置引数と同じ)。既定は、カレントディレクトリ |
 | `--autostart` | `autostart=1` にする |
 
@@ -121,7 +124,24 @@ launch_claude set coder --mode resume
 - 対象を必ず指定します(ID か `--autostart`)。`start` だけだとエラーになります。
 - 起動中のものは、スキップします。
 - 保存済みのディレクトリが存在しないときは、警告を出してスキップします(`$HOME` には切り替えません)。
-- 保存済みの ttyd のポートが空いている必要があります。他のプログラムが使っているポートを、強制的に空けることはしません。
+- 保存済みの ttyd のポートが空いている必要があります。他のプログラムが使っているポートを、強制的に空けることはしません。ほかのユーザーと共用するマシンでは、ユーザーごとに `port_min`〜`port_max` の範囲を分けてください。
+
+### ttyd
+
+すでに起動中のエージェントに、claude を起動し直さずに ttyd を開きます。閉じることもできます。
+
+```bash
+launch_claude ttyd review              # 開く。URL を表示する
+launch_claude ttyd review --port 7720  # このポートで開く
+launch_claude ttyd review --off        # 閉じる。エージェントは動いたまま
+```
+
+- ポートは、`--port` の指定、そのエージェントに保存済みのポート、範囲内の最初の空き、の順で決まります。
+- 一時的なものです。保存済みの設定は変えないので、次の `start` は、これまでどおり `ttyd = 0/1` に従います。常に ttyd を付けたい場合は、`set <id> --with-ttyd` を使います。
+- 閉じるか、エージェントを止めるまで、開いたままです。`TTYD_CREDENTIAL` / `ttyd_credential` が設定されていないときは、警告を表示します。ポートに接続できる人なら誰でも端末を操作できるためです。
+- `--once` のセッションにも使えます。
+
+「開いた」と表示するのは、このツールが起動した ttyd が、そのポートで実際に待ち受けているときだけです。ほかのプログラムやユーザーがポートを使っている場合は、URL を表示せずにエラーにします。
 
 ### stop / forget
 
@@ -170,7 +190,7 @@ launch_claude open --without-ttyd --autostart myproj   # 新しく登録する�
 launch_claude set myproj --without-ttyd --autostart    # 登録済みのものを変える場合
 ```
 
-この場合、再起動時には tmux のセッションだけが立ち上がり、ポートは使いません。`/remote-control` は ttyd と関係なく送られます。端末を直接見るときは、`tmux attach -t myproj` で入ります。なお、`--without-ttyd` にすると保存していたポートは消えます。あとで ttyd に戻すときに同じ URL にしたい場合は、`--port <n>` で指定してください。
+この場合、再起動時には tmux のセッションだけが立ち上がり、ポートは使いません。`/remote-control` は ttyd と関係なく送られます。端末を直接見るときは、`tmux attach -t myproj` で入るか、`launch_claude ttyd myproj` で一時的に ttyd を開きます。保存済みのポートは、ttyd が無効の間も残るので、`--with-ttyd` で戻すと同じ URL になります。
 
 ## 保存先
 
@@ -191,7 +211,7 @@ launch_claude set myproj --without-ttyd --autostart    # 登録済みのもの�
 | `remote_control` | `1` | 起動後に `/remote-control <id>` を送る。環境変数 `REMOTE_CONTROL=0` が優先される |
 | `ttyd_credential` | なし | ttyd の basic 認証の `user:password`。環境変数 `TTYD_CREDENTIAL` が優先される |
 
-`agents/<id>.conf` のキー(セクション `[agent]`): `dir`、`ttyd`(1/0)、`port`、`mode`(`new` / `resume` / `continue`)、`autostart`(1/0)。
+`agents/<id>.conf` のキー(セクション `[agent]`): `dir`、`ttyd`(1/0)、`port`(`ttyd = 0` の間も残り、予約済みとして扱う)、`mode`(`new` / `resume` / `continue`)、`autostart`(1/0)。
 
 ## 安全面
 
@@ -210,6 +230,8 @@ Usage:
   launch_claude <id>                     shortcut for: start <id>
   launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
   launch_claude list [--running|--autostart]
+  launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent, for now only (settings unchanged)
+  launch_claude ttyd <id> --off          close it again; the agent keeps running
   launch_claude add <id> [options]       register only (does not start)
   launch_claude set <id> [options]       change saved settings
   launch_claude forget <id>              remove the registration
@@ -222,8 +244,9 @@ open options:
   --once             throwaway: always a new conversation, not registered, auto id (once-HHMMSS)
                      if <id> is omitted, no ttyd by default, cleaned up when claude exits
   --with-ttyd        serve the session with ttyd
-  --without-ttyd     tmux only, no port (alias: --no-ttyd)
-  --port <n>         ttyd port (implies ttyd; default: first free port in the configured range)
+  --without-ttyd     tmux only (alias: --no-ttyd); a saved or given --port is kept for later
+  --port <n>         ttyd port (implies ttyd unless --without-ttyd; default: first free port
+                     in the configured range)
   --dir <path>       work directory (same as the 2nd positional argument; default: current dir)
   --autostart        mark the agent for 'start --autostart'
 

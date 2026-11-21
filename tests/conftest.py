@@ -26,6 +26,7 @@ class FakeTmux:
         self.unmanaged = set()  # tmux sessions not started by the tool
         self.launched = []     # (id, dir, port, mode, once)
         self.killed = []
+        self.ttyd_started = []  # (id, port)
 
     def session_exists(self, name):
         return name in self.managed or name in self.unmanaged
@@ -37,12 +38,28 @@ class FakeTmux:
         self.launched.append((agent_id, directory, port, mode, once))
         self.managed[agent_id] = {"kind": "once" if once else "agent", "dir": directory,
                                   "port": port, "started": "2026-01-02T03:04:05"}
+        if port:
+            self.unmanaged.add("ttyd-" + agent_id)
         return True
 
     def kill_session(self, name):
         self.killed.append(name)
         self.managed.pop(name, None)
         self.unmanaged.discard(name)
+        if name.startswith("ttyd-") and name[5:] in self.managed:
+            self.managed[name[5:]]["port"] = None
+
+    def start_ttyd(self, settings, agent_id, port):
+        self.ttyd_started.append((agent_id, port))
+        self.unmanaged.add("ttyd-" + agent_id)
+        self.managed[agent_id]["port"] = port
+
+    def tmux(self, *args):
+        """No real tmux call may leave the tests."""
+        if args[0] == "set-option" and args[-2] == "@launch_claude_port" and not args[-1]:
+            name = args[2].strip("=:")
+            if name in self.managed:
+                self.managed[name]["port"] = None
 
     def run(self, agent_id, directory="/somewhere", port=None, kind="agent"):
         self.managed[agent_id] = {"kind": kind, "dir": directory, "port": port,
@@ -62,7 +79,8 @@ def lc(monkeypatch, tmp_path):
     module = load_script()
     fake = FakeTmux()
     module.fake = fake
-    for name in ("session_exists", "managed_sessions", "launch_session", "kill_session"):
+    for name in ("session_exists", "managed_sessions", "launch_session", "kill_session", "start_ttyd",
+                 "tmux"):
         monkeypatch.setattr(module, name, getattr(fake, name))
     monkeypatch.setattr(module, "current_session", lambda: "")
     monkeypatch.setattr(module, "port_is_free", lambda port: True)

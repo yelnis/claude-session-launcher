@@ -27,10 +27,10 @@ import time  # noqa: E402
 import uuid  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 PROG = "launch_claude"
-COMMANDS = ("start", "stop", "open", "add", "set", "forget", "list", "help")
+COMMANDS = ("start", "stop", "open", "add", "set", "forget", "list", "ttyd", "help")
 RESERVED = ("all",) + COMMANDS
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 MODES = ("new", "resume", "continue")
@@ -46,6 +46,7 @@ KEY_DELAY = 0.5          # pause between typing a slash command and pressing Ent
 COMMAND_DELAY = 1.0      # pause between two slash commands
 DIALOG_TIMEOUT = 10      # how long to watch for the Remote Control dialog
 DIALOG_SETTLE = 2        # stop watching once the screen has been still for this long
+TTYD_TIMEOUT = 5         # how long ttyd may take to start listening
 
 READY_RE = re.compile(r"\? for shortcuts|shift\+tab to cycle")
 # The dialog /remote-control opens; "Continue" is its preselected, harmless choice.
@@ -68,6 +69,8 @@ Usage:
   launch_claude <id>                     shortcut for: start <id>
   launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
   launch_claude list [--running|--autostart]
+  launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent, for now only (settings unchanged)
+  launch_claude ttyd <id> --off          close it again; the agent keeps running
   launch_claude add <id> [options]       register only (does not start)
   launch_claude set <id> [options]       change saved settings
   launch_claude forget <id>              remove the registration
@@ -80,8 +83,9 @@ open options:
   --once             throwaway: always a new conversation, not registered, auto id (once-HHMMSS)
                      if <id> is omitted, no ttyd by default, cleaned up when claude exits
   --with-ttyd        serve the session with ttyd
-  --without-ttyd     tmux only, no port (alias: --no-ttyd)
-  --port <n>         ttyd port (implies ttyd; default: first free port in the configured range)
+  --without-ttyd     tmux only (alias: --no-ttyd); a saved or given --port is kept for later
+  --port <n>         ttyd port (implies ttyd unless --without-ttyd; default: first free port
+                     in the configured range)
   --dir <path>       work directory (same as the 2nd positional argument; default: current dir)
   --autostart        mark the agent for 'start --autostart'
 
@@ -245,7 +249,7 @@ def load_agent(agent_id):
     if not raw:
         return None
     ttyd = as_bool(raw.get("ttyd"), False)
-    port = as_int(raw.get("port"), None, "port of [%s]" % agent_id) if ttyd else None
+    port = as_int(raw.get("port"), None, "port of [%s]" % agent_id)
     mode = (raw.get("mode") or "new").strip().lower()
     if mode not in MODES:
         warn("[%s] unknown mode '%s', using 'new'" % (agent_id, mode))
@@ -264,7 +268,7 @@ def save_agent(agent_id, agent):
     write_ini(agent_path(agent_id), "agent", {
         "dir": agent["dir"],
         "ttyd": 1 if agent["ttyd"] else 0,
-        "port": agent["port"] if agent["ttyd"] else None,
+        "port": agent["port"],  # kept while ttyd is off: reserved for "ttyd <id>" and --with-ttyd
         "mode": agent["mode"],
         "autostart": 1 if agent["autostart"] else 0,
     })
@@ -303,7 +307,12 @@ def save_state(agent_id, **updates):
 
 def describe(agent):
     parts = ["dir=" + agent["dir"]]
-    parts.append("port=%s" % agent["port"] if agent["ttyd"] else "ttyd=off")
+    if agent["ttyd"]:
+        parts.append("port=%s" % agent["port"])
+    elif agent["port"]:
+        parts.append("ttyd=off (port %s reserved)" % agent["port"])
+    else:
+        parts.append("ttyd=off")
     parts.append("mode=" + agent["mode"])
     parts.append("autostart=%d" % (1 if agent["autostart"] else 0))
     return ", ".join(parts)
@@ -342,7 +351,7 @@ def reserved_ports(skip_id=None):
             agent = load_agent(agent_id)
         except Error:
             continue
-        if agent and agent["ttyd"]:
+        if agent and agent["port"]:
             ports[agent["port"]] = agent_id
     return ports
 
@@ -655,12 +664,7 @@ def launch_session(settings, agent_id, directory, port, mode, once=False):
 
     kill_session(ttyd_session(agent_id))  # a leftover of ours may still hold the port
     if port:
-        for _ in range(10):
-            if port_is_free(port):
-                break
-            time.sleep(0.2)
-        else:
-            raise Error("[%s] port %d is in use by another program" % (agent_id, port))
+        wait_port_free(agent_id, port)
 
     session_id = None
     if mode == "resume":
@@ -689,7 +693,7 @@ def launch_session(settings, agent_id, directory, port, mode, once=False):
     session = "=" + agent_id
     pane = session + ":"  # set-option and send-keys need the "=name:" form for an exact match
     for option, value in ((OPT_KIND, "once" if once else "agent"), (OPT_DIR, directory),
-                          (OPT_PORT, str(port) if port else ""), (OPT_STARTED, started)):
+                          (OPT_PORT, ""), (OPT_STARTED, started)):
         tmux("set-option", "-t", pane, option, value)
 
     if not once:
@@ -718,17 +722,58 @@ def launch_session(settings, agent_id, directory, port, mode, once=False):
              "  Last lines of the screen:\n%s" % (agent_id, reason, screen_tail(screen)))
 
     if port:
-        socket_path = tmux("display-message", "-p", "-t", pane, "#{socket_path}").stdout.strip()
-        attach = ["tmux"] + (["-S", socket_path] if socket_path else [])
-        attach += ["attach-session", "-t", session]
-        ttyd = ["env", "-u", "TMUX", "ttyd", "-p", str(port), "-W"]
-        if settings["ttyd_credential"]:
-            ttyd += ["-c", settings["ttyd_credential"]]
-        result = tmux("new-session", "-d", "-s", ttyd_session(agent_id), *(ttyd + attach))
-        if result.returncode != 0:
-            warn("[%s] could not start ttyd: %s" % (agent_id, result.stderr.strip()))
+        try:
+            start_ttyd(settings, agent_id, port)
+        except Error as e:
+            warn("%s The session runs without ttyd." % e)
+            port = None
     info(" -> [%s] %s: %s" % (agent_id, "ready" if ready else "started", access_text(agent_id, port)))
     return True
+
+
+def wait_port_free(agent_id, port):
+    for _ in range(10):
+        if port_is_free(port):
+            return
+        time.sleep(0.2)
+    raise Error("[%s] port %d is in use by another program." % (agent_id, port))
+
+
+def start_ttyd(settings, agent_id, port):
+    """Serve the running tmux session with ttyd and record the port on the session.
+
+    Raises Error unless our own ttyd ends up listening on the port, so that a
+    URL is never shown for a port that another program (or user) holds.
+    """
+    require("ttyd")
+    name = ttyd_session(agent_id)
+    pane = "=" + agent_id + ":"
+    kill_session(name)
+    tmux("set-option", "-t", pane, OPT_PORT, "")
+    wait_port_free(agent_id, port)
+    socket_path = tmux("display-message", "-p", "-t", pane, "#{socket_path}").stdout.strip()
+    attach = ["tmux"] + (["-S", socket_path] if socket_path else [])
+    attach += ["attach-session", "-t", "=" + agent_id]
+    ttyd = ["env", "-u", "TMUX", "ttyd", "-p", str(port), "-W"]
+    if settings["ttyd_credential"]:
+        ttyd += ["-c", settings["ttyd_credential"]]
+    result = tmux("new-session", "-d", "-s", name, *(ttyd + attach))
+    if result.returncode != 0:
+        raise Error("[%s] could not start ttyd: %s." % (agent_id, result.stderr.strip()))
+    # ttyd exits when it cannot bind, which ends its tmux session.
+    deadline = time.time() + TTYD_TIMEOUT
+    while time.time() < deadline:
+        if not session_exists(name):
+            break
+        if not port_is_free(port):
+            time.sleep(0.3)
+            if session_exists(name):
+                tmux("set-option", "-t", pane, OPT_PORT, str(port))
+                return
+            break
+        time.sleep(0.2)
+    kill_session(name)
+    raise Error("[%s] ttyd did not start on port %d (the port may have been taken)." % (agent_id, port))
 
 
 def stop_session(agent_id):
@@ -781,9 +826,16 @@ def add_ttyd_options(parser):
     parser.add_argument("--dir", dest="directory")
 
 
-def check_ttyd_args(args):
-    if args.port is not None and args.ttyd is False:
-        raise Error("--port cannot be used together with --without-ttyd")
+def new_agent(settings, agent_id, args, mode="new"):
+    """Settings for a new registration from --dir/--port/--with(out)-ttyd/--autostart."""
+    agent = {"dir": resolve_dir(args.directory or os.getcwd()), "ttyd": args.ttyd is not False,
+             "port": None, "mode": mode, "autostart": bool(args.autostart)}
+    if args.port is not None:
+        validate_port(args.port, agent_id)
+        agent["port"] = args.port  # with --without-ttyd: reserved for later
+    elif agent["ttyd"]:
+        agent["port"] = pick_free_port(settings, agent_id)
+    return agent
 
 
 def resolve_dir(path):
@@ -803,11 +855,13 @@ def apply_changes(settings, agent_id, agent, args):
         agent["dir"] = resolve_dir(args.directory)
     if args.port is not None:
         validate_port(args.port, agent_id)
-        agent["ttyd"], agent["port"] = True, args.port
-    elif args.ttyd is True and not agent["ttyd"]:
-        agent["ttyd"], agent["port"] = True, pick_free_port(settings, agent_id)
-    elif args.ttyd is False:
-        agent["ttyd"], agent["port"] = False, None
+        agent["port"] = args.port
+    if args.ttyd is not None:
+        agent["ttyd"] = args.ttyd  # --without-ttyd keeps the port
+    elif args.port is not None:
+        agent["ttyd"] = True  # --port alone implies ttyd
+    if agent["ttyd"] and agent["port"] is None:
+        agent["port"] = pick_free_port(settings, agent_id)
     if getattr(args, "mode", None) is not None:
         agent["mode"] = args.mode
     if args.autostart is not None:
@@ -866,7 +920,6 @@ def cmd_open(argv):
         if args.directory is not None:
             raise Error("open: directory given twice (positional and --dir)")
         args.directory = args.positional[1]
-    check_ttyd_args(args)
     if args.resume and args.cont:
         raise Error("open: --resume and --continue cannot be combined")
     if args.once:
@@ -909,13 +962,7 @@ def cmd_open(argv):
         check_dir_free(target, agent_id)
 
     if agent is None:
-        agent = {"dir": resolve_dir(args.directory or os.getcwd()), "ttyd": False, "port": None,
-                 "mode": "new", "autostart": bool(args.autostart)}
-        if args.port is not None:
-            validate_port(args.port, agent_id)
-            agent["ttyd"], agent["port"] = True, args.port
-        elif args.ttyd is not False:
-            agent["ttyd"], agent["port"] = True, pick_free_port(settings, agent_id)
+        agent = new_agent(settings, agent_id, args)
         save_agent(agent_id, agent)
         info("Registered [%s]: %s" % (agent_id, describe(agent)))
     elif apply_changes(settings, agent_id, agent, args):
@@ -944,6 +991,8 @@ def open_once(settings, agent_id, args):
     directory = resolve_dir(args.directory or os.getcwd())
     port = None
     if args.port is not None:
+        if args.ttyd is False:
+            raise Error("open: --once saves nothing, so --port needs ttyd (drop --without-ttyd)")
         validate_port(args.port, agent_id)
         port = args.port
     elif args.ttyd is True:
@@ -960,7 +1009,6 @@ def parse_add_set(command, argv):
     group.add_argument("--autostart", dest="autostart", action="store_const", const=True, default=None)
     group.add_argument("--no-autostart", dest="autostart", action="store_const", const=False)
     args = parser.parse_args(argv)
-    check_ttyd_args(args)
     require_valid_id(args.id)
     return args
 
@@ -970,13 +1018,7 @@ def cmd_add(argv):
     settings = load_settings()
     if load_agent(args.id) is not None:
         raise Error("'%s' is already registered. Use: %s set %s ..." % (args.id, PROG, args.id))
-    agent = {"dir": resolve_dir(args.directory or os.getcwd()), "ttyd": False, "port": None,
-             "mode": args.mode or "new", "autostart": bool(args.autostart)}
-    if args.port is not None:
-        validate_port(args.port, args.id)
-        agent["ttyd"], agent["port"] = True, args.port
-    elif args.ttyd is not False:
-        agent["ttyd"], agent["port"] = True, pick_free_port(settings, args.id)
+    agent = new_agent(settings, args.id, args, mode=args.mode or "new")
     save_agent(args.id, agent)
     info("Registered [%s]: %s" % (args.id, describe(agent)))
     return 0
@@ -1039,6 +1081,53 @@ def cmd_stop(argv):
     return 0
 
 
+def cmd_ttyd(argv):
+    parser = make_parser("ttyd")
+    parser.add_argument("id")
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--off", action="store_true")
+    args = parser.parse_args(argv)
+    if args.off and args.port is not None:
+        raise Error("ttyd: --off and --port cannot be combined")
+    agent_id = args.id
+    agent = load_agent(agent_id)
+    sessions = managed_sessions()
+    if agent is None and agent_id not in sessions:
+        raise Error("'%s' is neither registered nor a running session of %s" % (agent_id, PROG))
+    name = ttyd_session(agent_id)
+
+    if args.off:
+        if not session_exists(name):
+            info("[%s] ttyd is not open." % agent_id)
+            return 0
+        kill_session(name)
+        tmux("set-option", "-t", "=" + agent_id + ":", OPT_PORT, "")
+        info("Closed ttyd for [%s]. The session keeps running: tmux attach -t %s" % (agent_id, agent_id))
+        return 0
+
+    if not session_exists(agent_id):
+        raise Error("[%s] is not running. Start it first: %s start %s" % (agent_id, PROG, agent_id))
+    settings = load_settings()
+    current = sessions.get(agent_id, {}).get("port") if session_exists(name) else None
+    if current and args.port in (None, current):
+        info("[%s] ttyd is already open: %s" % (agent_id, access_text(agent_id, current)))
+        return 0
+    # Port: --port, then the saved one, then the first free one.
+    if args.port is not None:
+        validate_port(args.port, agent_id)
+        port = args.port
+    elif agent is not None and agent["port"]:
+        port = agent["port"]
+    else:
+        port = pick_free_port(settings, agent_id)
+    start_ttyd(settings, agent_id, port)
+    info("Opened ttyd for [%s]: %s" % (agent_id, access_text(agent_id, port)))
+    info("Close it with: %s ttyd %s --off" % (PROG, agent_id))
+    if not settings["ttyd_credential"]:
+        warn("ttyd has no authentication: anyone who can reach port %d can use this terminal." % port)
+    return 0
+
+
 def short_path(path):
     home = os.path.expanduser("~")
     if path == home:
@@ -1090,7 +1179,10 @@ def cmd_list(argv):
             missing = True
         if running:
             # Show what is actually running, which may differ from edited settings.
-            port = sessions[agent_id]["port"] if agent_id in sessions else agent["port"]
+            if agent_id in sessions:
+                port = sessions[agent_id]["port"]
+            else:  # started by something else: fall back to the saved settings
+                port = agent["port"] if agent["ttyd"] else None
             where = access(port, False)
         else:
             where = "-"
@@ -1133,7 +1225,7 @@ def main(argv=None):
         print("%s %s" % (PROG, __version__))
         return 0
     commands = {"start": cmd_start, "open": cmd_open, "add": cmd_add, "set": cmd_set,
-                "forget": cmd_forget, "stop": cmd_stop, "list": cmd_list}
+                "forget": cmd_forget, "stop": cmd_stop, "list": cmd_list, "ttyd": cmd_ttyd}
     try:
         if any(arg in ("-h", "--help") for arg in rest):
             sys.stdout.write(USAGE)
