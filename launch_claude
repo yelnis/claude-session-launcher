@@ -14,6 +14,7 @@ if sys.version_info < MIN_PYTHON:
 import argparse  # noqa: E402
 import configparser  # noqa: E402
 import datetime  # noqa: E402
+import fcntl  # noqa: E402
 import json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
@@ -21,6 +22,7 @@ import shlex  # noqa: E402
 import shutil  # noqa: E402
 import socket  # noqa: E402
 import stat  # noqa: E402
+import struct  # noqa: E402
 import subprocess  # noqa: E402
 import tempfile  # noqa: E402
 import time  # noqa: E402
@@ -34,6 +36,7 @@ COMMANDS = ("start", "stop", "open", "add", "set", "forget", "list", "ttyd", "he
 RESERVED = ("all",) + COMMANDS
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 MODES = ("new", "resume", "continue")
+LOOPBACK = ("lo", "lo0", "127.0.0.1", "::1")
 
 DEFAULT_PORT_MIN = 7700
 DEFAULT_PORT_MAX = 7799
@@ -192,6 +195,19 @@ def as_int(value, default, name):
         raise Error("%s must be a number (got '%s')" % (name, value)) from None
 
 
+def parse_interface(value):
+    """ttyd_interface: an interface name or an IP address, passed to 'ttyd -i'."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    if value.lower() == "localhost":
+        return "lo"  # ttyd does not listen anywhere when given the name "localhost"
+    if "/" in value:
+        raise Error("ttyd_interface = %s: UNIX socket paths are not supported; "
+                    "use an interface name (lo, eth0, ...) or an IP address" % value)
+    return value
+
+
 def load_settings():
     """Global settings: the config file, overridden by environment variables."""
     path = config_dir() / "config"
@@ -202,6 +218,7 @@ def load_settings():
         "port_max": as_int(raw.get("port_max"), DEFAULT_PORT_MAX, "port_max"),
         "remote_control": as_bool(raw.get("remote_control"), True),
         "ttyd_credential": None,
+        "ttyd_interface": parse_interface(raw.get("ttyd_interface")),
         "ttyd_warning": as_bool(raw.get("ttyd_warning"), True),
     }
     # No claude_config_dir in the config file: follow the caller's environment,
@@ -643,9 +660,35 @@ def check_dir_free(directory, agent_id):
 # Start / stop
 # --------------------------------------------------------------------------
 
-def access_text(agent_id, port, ip=None):
+def interface_ip(name):
+    """IPv4 address of a network interface (Linux ioctl); None if it cannot be read."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        packed = fcntl.ioctl(s.fileno(), 0x8915, struct.pack("256s", name[:15].encode()))  # SIOCGIFADDR
+        return socket.inet_ntoa(packed[20:24])
+    except (OSError, ValueError):
+        return None
+    finally:
+        s.close()
+
+
+def url_host(settings):
+    """The host to show in URLs: where our ttyd listens, as far as we can tell."""
+    iface = settings.get("ttyd_interface")
+    if not iface:
+        return host_ip()
+    if iface in LOOPBACK:
+        return "localhost"
+    try:
+        socket.inet_aton(iface)
+        return iface  # already an IP address
+    except OSError:
+        return interface_ip(iface) or host_ip()
+
+
+def access_text(settings, agent_id, port):
     if port:
-        return "http://%s:%d" % (ip or host_ip(), port)
+        return "http://%s:%d" % (url_host(settings), port)
     return "tmux attach -t %s" % agent_id
 
 
@@ -728,7 +771,8 @@ def launch_session(settings, agent_id, directory, port, mode, once=False):
         except Error as e:
             warn("%s The session runs without ttyd." % e)
             port = None
-    info(" -> [%s] %s: %s" % (agent_id, "ready" if ready else "started", access_text(agent_id, port)))
+    info(" -> [%s] %s: %s"
+         % (agent_id, "ready" if ready else "started", access_text(settings, agent_id, port)))
     return True
 
 
@@ -756,6 +800,8 @@ def start_ttyd(settings, agent_id, port):
     attach = ["tmux"] + (["-S", socket_path] if socket_path else [])
     attach += ["attach-session", "-t", "=" + agent_id]
     ttyd = ["env", "-u", "TMUX", "ttyd", "-p", str(port), "-W"]
+    if settings["ttyd_interface"]:
+        ttyd += ["-i", settings["ttyd_interface"]]
     if settings["ttyd_credential"]:
         ttyd += ["-c", settings["ttyd_credential"]]
     result = tmux("new-session", "-d", "-s", name, *(ttyd + attach))
@@ -791,7 +837,8 @@ def start_registered(settings, agent_id, mode=None):
         raise Error("'%s' is not registered. Use: %s open %s  (or: %s add %s)"
                     % (agent_id, PROG, agent_id, PROG, agent_id))
     if session_exists(agent_id):
-        info("[%s] is already running: %s" % (agent_id, access_text(agent_id, running_port(agent_id))))
+        info("[%s] is already running: %s"
+             % (agent_id, access_text(settings, agent_id, running_port(agent_id))))
         return "running"
     if not agent["dir"] or not os.path.isdir(agent["dir"]):
         warn("[%s] directory %s not found; skipped." % (agent_id, agent["dir"] or "(not set)"))
@@ -948,7 +995,8 @@ def cmd_open(argv):
         if changed:
             raise Error("[%s] is running; stop it before changing its settings: %s stop %s"
                         % (agent_id, PROG, agent_id))
-        info("[%s] is already running: %s" % (agent_id, access_text(agent_id, running_port(agent_id))))
+        info("[%s] is already running: %s"
+             % (agent_id, access_text(settings, agent_id, running_port(agent_id))))
         return 0
     if agent is None and session_exists(ttyd_session(agent_id)):
         raise Error("a tmux session named '%s' already exists. Choose another ID."
@@ -1111,7 +1159,7 @@ def cmd_ttyd(argv):
     settings = load_settings()
     current = sessions.get(agent_id, {}).get("port") if session_exists(name) else None
     if current and args.port in (None, current):
-        info("[%s] ttyd is already open: %s" % (agent_id, access_text(agent_id, current)))
+        info("[%s] ttyd is already open: %s" % (agent_id, access_text(settings, agent_id, current)))
         return 0
     # Port: --port, then the saved one, then the first free one.
     if args.port is not None:
@@ -1122,9 +1170,10 @@ def cmd_ttyd(argv):
     else:
         port = pick_free_port(settings, agent_id)
     start_ttyd(settings, agent_id, port)
-    info("Opened ttyd for [%s]: %s" % (agent_id, access_text(agent_id, port)))
+    info("Opened ttyd for [%s]: %s" % (agent_id, access_text(settings, agent_id, port)))
     info("Close it with: %s ttyd %s --off" % (PROG, agent_id))
-    if settings["ttyd_warning"] and not settings["ttyd_credential"]:
+    if (settings["ttyd_warning"] and not settings["ttyd_credential"]
+            and settings["ttyd_interface"] not in LOOPBACK):
         # We only know what we passed to ttyd; a proxy, VPN or firewall is invisible from here.
         warn("ttyd was started without a password of its own. Unless port %d is protected some "
              "other way, anyone who can reach it can use this terminal. "
@@ -1154,14 +1203,15 @@ def cmd_list(argv):
     parser.add_argument("--autostart", action="store_true")
     args = parser.parse_args(argv)
     sessions = managed_sessions()
-    ip = None
+    host = None
     rows, missing = [], False
+    settings = load_settings()
 
     def access(port, once):
-        nonlocal ip
+        nonlocal host
         if port:
-            ip = ip or host_ip()
-            text = "http://%s:%d" % (ip, port)
+            host = host or url_host(settings)
+            text = "http://%s:%d" % (host, port)
         else:
             text = "tmux only"
         return text + (" (once)" if once else "")

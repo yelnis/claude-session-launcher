@@ -411,7 +411,8 @@ def test_ini_round_trip_keeps_percent_signs(lc, tmp_path):
 def test_settings_defaults_without_files(lc):
     settings = lc.load_settings()
     assert settings == {"claude_config_dir": None, "port_min": 7700, "port_max": 7799,
-                        "remote_control": True, "ttyd_credential": None, "ttyd_warning": True}
+                        "remote_control": True, "ttyd_credential": None, "ttyd_interface": None,
+                        "ttyd_warning": True}
 
 
 def test_settings_from_file_and_environment(lc, monkeypatch, capsys):
@@ -672,3 +673,52 @@ def test_ttyd_errors(lc, workdir, capsys):
 
 def test_ttyd_is_reserved(lc):
     assert not lc.is_valid_id("ttyd")
+
+
+# ---- ttyd_interface -----------------------------------------------------
+
+def write_config(module, text):
+    path = module.config_dir() / "config"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("[launch_claude]\n" + text)
+
+
+@pytest.mark.parametrize("value,expected", [("lo", "lo"), ("localhost", "lo"), ("127.0.0.1", "127.0.0.1"),
+                                            ("eth0", "eth0"), ("192.0.2.7", "192.0.2.7"), ("", None)])
+def test_interface_values(lc, value, expected):
+    write_config(lc, "ttyd_interface = %s\n" % value)
+    assert lc.load_settings()["ttyd_interface"] == expected
+
+
+def test_interface_socket_path_is_refused(lc, workdir, capsys):
+    write_config(lc, "ttyd_interface = /run/ttyd.sock\n")
+    assert lc.main(["list"]) == 1
+    assert "UNIX socket paths are not supported" in capsys.readouterr().err
+
+
+def test_loopback_interface_gives_localhost_urls_and_no_warning(lc, workdir, capsys):
+    write_config(lc, "ttyd_interface = lo\n")
+    lc.main(["open", "--without-ttyd", "a"])
+    capsys.readouterr()
+    assert lc.main(["ttyd", "a"]) == 0
+    out, err = capsys.readouterr()
+    assert "http://localhost:7700" in out
+    assert err == ""  # only reachable from this machine: nothing to warn about
+    lc.main(["list"])
+    assert "http://localhost:7700" in capsys.readouterr().out
+
+
+def test_url_host_for_addresses_and_interface_names(lc, monkeypatch):
+    assert lc.url_host({"ttyd_interface": None}) == "192.0.2.10"
+    assert lc.url_host({"ttyd_interface": "192.0.2.7"}) == "192.0.2.7"
+    monkeypatch.setattr(lc, "interface_ip", lambda name: {"vpn0": "198.51.100.4"}.get(name))
+    assert lc.url_host({"ttyd_interface": "vpn0"}) == "198.51.100.4"
+    assert lc.url_host({"ttyd_interface": "nosuch0"}) == "192.0.2.10"  # falls back to the usual address
+
+
+def test_interface_is_passed_to_ttyd(launcher, workdir):
+    write_config(launcher, "ttyd_interface = lo\nremote_control = 0\n")
+    assert launcher.main(["open", "--port", "7701", "a"]) == 0
+    ttyd = [args for args in launcher.calls if args[0] == "new-session" and "ttyd-a" in args][0]
+    start = ttyd.index("ttyd")
+    assert ttyd[start:start + 6] == ("ttyd", "-p", "7701", "-W", "-i", "lo")

@@ -160,3 +160,15 @@ def test_ttyd_can_be_opened_and_closed_on_a_running_session(sandbox):
     assert "tmux only" in sandbox.run("list").stdout
     conf = (sandbox.home / ".config" / "launch_claude" / "agents" / "quiet.conf").read_text()
     assert "ttyd = 0" in conf  # the saved setting was not changed
+
+
+@pytest.mark.skipif(shutil.which("ttyd") is None, reason="ttyd is not installed")
+def test_ttyd_on_loopback_only(sandbox):
+    config = sandbox.home / ".config" / "launch_claude" / "config"
+    config.parent.mkdir(parents=True)
+    config.write_text("[launch_claude]\nttyd_interface = lo\n")
+    result = sandbox.run("open", "local")
+    assert result.returncode == 0, result.stderr
+    assert "http://localhost:" in result.stdout  # started, verified as listening, shown as localhost
+    assert sorted(sandbox.sessions()) == ["local", "ttyd-local"]
+    assert "http://localhost:" in sandbox.run("list").stdout
