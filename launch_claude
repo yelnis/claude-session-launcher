@@ -32,8 +32,6 @@ from pathlib import Path  # noqa: E402
 __version__ = "0.3.0"
 
 PROG = "launch_claude"
-COMMANDS = ("start", "stop", "open", "add", "set", "forget", "list", "ttyd", "help")
-RESERVED = ("all",) + COMMANDS
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 MODES = ("new", "resume", "continue")
 LOOPBACK = ("lo", "lo0", "127.0.0.1", "::1")
@@ -1315,6 +1313,12 @@ def cmd_list(argv):
     return 0
 
 
+# The one list of commands: main() dispatches on it, and the names cannot be used as IDs.
+COMMANDS = {"start": cmd_start, "stop": cmd_stop, "open": cmd_open, "add": cmd_add, "set": cmd_set,
+            "forget": cmd_forget, "list": cmd_list, "ttyd": cmd_ttyd}
+RESERVED = ("all",) + tuple(COMMANDS) + ("help",)
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv:
@@ -1327,14 +1331,12 @@ def main(argv=None):
     if first in ("--version", "-V"):
         print("%s %s" % (PROG, __version__))
         return 0
-    commands = {"start": cmd_start, "open": cmd_open, "add": cmd_add, "set": cmd_set,
-                "forget": cmd_forget, "stop": cmd_stop, "list": cmd_list, "ttyd": cmd_ttyd}
     try:
         if any(arg in ("-h", "--help") for arg in rest):
             sys.stdout.write(USAGE)
             return 0
-        if first in commands:  # commands win over IDs of the same name
-            return commands[first](rest)
+        if first in COMMANDS:  # commands win over IDs of the same name
+            return COMMANDS[first](rest)
         if first.startswith("-") or not ID_RE.match(first):
             raise Error("unknown command or option '%s'\nRun '%s help' for usage." % (first, PROG))
         return cmd_start(argv)  # shortcut: launch_claude <id>

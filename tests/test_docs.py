@@ -88,6 +88,13 @@ def test_readme_contents_list_every_section(name):
         assert anchor == title.lower().replace(" ", "-")
 
 
+@pytest.mark.parametrize("name", READMES)
+def test_readme_lists_the_reserved_words(name):
+    module = load_script()
+    line = [x for x in (ROOT / name).read_text(encoding="utf-8").split("\n") if "[A-Za-z0-9_-]*$" in x][0]
+    assert re.findall(r"`([a-z]+)`", line.split(":", 1)[1]) == list(module.RESERVED)
+
+
 def test_help_lists_every_command():
     module = load_script()
     for command in module.COMMANDS:

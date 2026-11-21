@@ -200,6 +200,7 @@ Skipped when `tmux` is not installed; the ttyd tests also when `ttyd` is not ins
 | `test_reference_config_sample_changes_nothing_as_is` | `config.example` has every key commented out |
 | `test_relative_links_point_to_existing_files` | Relative links in the READMEs and `docs/` point to files that exist |
 | `test_readme_contents_list_every_section` | The contents list in both READMEs matches the headings |
+| `test_readme_lists_the_reserved_words` | The reserved words named in both READMEs are exactly the ones the code refuses as ids |
 | `test_help_lists_every_command` | The help text names every command |
 | `test_test_list_names_every_test` | The tables in this file name exactly the tests that exist |
 
