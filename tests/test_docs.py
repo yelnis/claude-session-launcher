@@ -10,7 +10,7 @@ from conftest import load_script
 ROOT = Path(__file__).resolve().parent.parent
 READMES = ["README.md", "README.ja.md"]
 DOCS = READMES + ["docs/reference.md", "docs/reference.ja.md", "docs/comparison.md",
-                  "docs/comparison.ja.md"]
+                  "docs/comparison.ja.md", "tests/README.md"]
 CONFIG_SAMPLES = sorted(p for p in (ROOT / "examples").iterdir() if p.is_file())
 AGENT_SAMPLES = sorted((ROOT / "examples" / "agents").iterdir())
 
@@ -92,3 +92,12 @@ def test_help_lists_every_command():
     module = load_script()
     for command in module.COMMANDS:
         assert "launch_claude " + command in module.USAGE
+
+
+def test_test_list_names_every_test():
+    existing = set()
+    for path in (ROOT / "tests").glob("test_*.py"):
+        existing.update(re.findall(r"(?m)^def (test_\w+)\(", path.read_text(encoding="utf-8")))
+    text = (ROOT / "tests" / "README.md").read_text(encoding="utf-8")
+    listed = re.findall(r"(?m)^\| `(test_\w+)` \|", text)
+    assert sorted(listed) == sorted(existing)
