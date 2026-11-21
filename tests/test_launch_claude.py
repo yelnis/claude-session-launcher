@@ -453,6 +453,7 @@ def launcher(monkeypatch, tmp_path, workdir):
     monkeypatch.setattr(module, "require", lambda command: None)
     monkeypatch.setattr(module, "port_is_free", lambda port: True)
     monkeypatch.setattr(module, "wait_for_ready", lambda target, timeout=None: (True, "", ""))
+    monkeypatch.setattr(module, "close_remote_control_dialog", lambda target: False)
     monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
     return module
 
@@ -533,3 +534,21 @@ def test_missing_tmux_is_reported(lc, monkeypatch, capsys):
         lc.require("tmux")
     with pytest.raises(lc.Error, match="--without-ttyd"):
         lc.require("ttyd")
+
+
+def test_remote_control_dialog_is_closed_only_on_continue(lc, monkeypatch):
+    dialog = "  Remote Control\n  This session is available\n    Disconnect this session\n  \u276f Continue\n"
+    other = "  Remote Control\n  \u276f Disconnect this session\n    Continue\n"
+    sent = []
+    monkeypatch.setattr(lc, "tmux", lambda *args: sent.append(args))
+    monkeypatch.setattr(lc.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(lc, "DIALOG_TIMEOUT", 0.2)
+
+    monkeypatch.setattr(lc, "capture_pane", lambda target: dialog)
+    assert lc.close_remote_control_dialog("=a:") is True
+    assert sent == [("send-keys", "-t", "=a:", "Enter")]
+
+    sent.clear()
+    monkeypatch.setattr(lc, "capture_pane", lambda target: other)
+    assert lc.close_remote_control_dialog("=a:") is False
+    assert sent == []

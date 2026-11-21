@@ -2,6 +2,8 @@ English | [日本語](README.ja.md)
 
 # claude-session-launcher
 
+> **TL;DR** — This script starts several Claude Code sessions at once and makes each of them reachable through `/remote-control`. I wrote it because I wanted my development sessions to come back automatically when Linux reboots (cron `@reboot`). While at it, it also names each session and remembers its work directory and last conversation.
+
 `launch_claude` starts several named [Claude Code](https://code.claude.com/docs) sessions in tmux, optionally serves each one in the browser with [ttyd](https://github.com/tsl0922/ttyd), and sends `/remote-control` once the session is ready.
 
 - Give a session an ID (`writer`, `coder`, ...) and it remembers its work directory, port and conversation mode.
@@ -9,7 +11,7 @@ English | [日本語](README.ja.md)
 - Sessions flagged `autostart` come back after a reboot with one cron line.
 - `open --once` gives you a throwaway session that cleans up after itself.
 
-It is a single Python file that uses only the standard library.
+It is a single Python file that uses only the standard library. It is also 100% written by Claude Code (the human wrote the spec and did the complaining).
 
 > **Warning: ttyd has no authentication by default.** Anyone who can reach the port can operate your terminal. See [Security](#security).
 
@@ -63,15 +65,15 @@ Cron runs with a minimal `PATH`, so write the full path as shown.
 launch_claude                          show help and exit with status 1; starts nothing
 launch_claude help | -h | --help       show help
 launch_claude --version                show the version
+launch_claude open [options] [<id>] [dir]   open a new or registered agent; registers it unless --once
 launch_claude start <id>...            start registered agents
 launch_claude start --autostart        start every agent with autostart=1
 launch_claude <id>                     shortcut for: start <id>
-launch_claude open [options] [<id>] [dir]   open a new or registered agent; registers it unless --once
+launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
+launch_claude list [--running|--autostart]
 launch_claude add <id> [options]       register only (does not start)
 launch_claude set <id> [options]       change saved settings
 launch_claude forget <id>              remove the registration
-launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
-launch_claude list [--running|--autostart]
 ```
 
 IDs match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. These words are reserved and cannot be IDs: `all`, `start`, `stop`, `open`, `add`, `set`, `forget`, `list`, `help`.
@@ -161,6 +163,15 @@ launch_claude start --autostart           # start them now (this is what cron ru
 
 For an ad-hoc combination, list the IDs: `launch_claude start writer coder`. An agent registered by `open` has `autostart=0` unless you pass `--autostart`.
 
+ttyd and autostart are independent settings, so an agent without ttyd (tmux only) can be autostarted too.
+
+```bash
+launch_claude open --without-ttyd --autostart myproj   # a new agent
+launch_claude set myproj --without-ttyd --autostart    # a registered agent
+```
+
+After a reboot only the tmux session is started and no port is used. `/remote-control` is still sent, since it does not depend on ttyd. To see the terminal, use `tmux attach -t myproj`. Note that `--without-ttyd` drops the saved port; if you switch back to ttyd later and want the same URL, pass `--port <n>`.
+
 ## Files
 
 | What | Where |
@@ -192,16 +203,16 @@ Everything works without any of these files. Both kinds of settings file are INI
 
 ```
 Usage:
+  launch_claude open [options] [<id>] [dir]
+                                         open a new or registered agent; registers it unless --once
   launch_claude start <id>...            start registered agents
   launch_claude start --autostart        start every agent with autostart=1 (use this from cron @reboot)
   launch_claude <id>                     shortcut for: start <id>
-  launch_claude open [options] [<id>] [dir]
-                                         open a new or registered agent; registers it unless --once
+  launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
+  launch_claude list [--running|--autostart]
   launch_claude add <id> [options]       register only (does not start)
   launch_claude set <id> [options]       change saved settings
   launch_claude forget <id>              remove the registration
-  launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
-  launch_claude list [--running|--autostart]
   launch_claude help | -h | --help       show this help
   launch_claude --version                show the version
 
@@ -315,6 +326,7 @@ One process waits for connections from claude.ai/code or the mobile app and crea
   - Run `claude auth login` again with the same `CLAUDE_CONFIG_DIR`.
   - If a running session does not pick up the new credentials, `stop` and `start` it.
 - If copying from the screen is difficult, use tmux copy mode or `tmux capture-pane -p -J`.
+- After `/remote-control`, Claude Code opens a dialog (Disconnect / Show QR code / Continue). This tool closes it by pressing Enter, only when `Continue` is the selected item. If the dialog is still open, attach with `tmux attach -t <id>` and choose `Continue`.
 - A session counts as ready when `? for shortcuts` or `shift+tab to cycle` appears on the screen (up to 60 seconds). If the wait fails, the warning includes the last 10 lines of the screen; check whether these texts still match your Claude Code version.
 - The command is typed into the default shell of tmux and uses `VAR=value command` and `||`, so a POSIX-like shell (bash, zsh, ...) is expected.
 

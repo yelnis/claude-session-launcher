@@ -27,7 +27,7 @@ import time  # noqa: E402
 import uuid  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 PROG = "launch_claude"
 COMMANDS = ("start", "stop", "open", "add", "set", "forget", "list", "help")
@@ -44,8 +44,12 @@ STALL_TIMEOUT = 20       # give up early if the screen has not changed for this 
 POLL_INTERVAL = 1.0
 KEY_DELAY = 0.5          # pause between typing a slash command and pressing Enter
 COMMAND_DELAY = 1.0      # pause between two slash commands
+DIALOG_TIMEOUT = 10      # how long to watch for the Remote Control dialog
+DIALOG_SETTLE = 2        # stop watching once the screen has been still for this long
 
 READY_RE = re.compile(r"\? for shortcuts|shift\+tab to cycle")
+# The dialog /remote-control opens; "Continue" is its preselected, harmless choice.
+RC_DIALOG_RE = re.compile(r"Remote Control[\s\S]*\u276f\s*Continue")
 TRUST_RE = re.compile(r"trust this folder|trust the files", re.IGNORECASE)
 SHELLS = ("bash", "zsh", "sh", "fish", "dash", "ksh", "tcsh", "csh")
 
@@ -57,16 +61,16 @@ OPT_STARTED = "@launch_claude_started"
 
 USAGE = """\
 Usage:
+  launch_claude open [options] [<id>] [dir]
+                                         open a new or registered agent; registers it unless --once
   launch_claude start <id>...            start registered agents
   launch_claude start --autostart        start every agent with autostart=1 (use this from cron @reboot)
   launch_claude <id>                     shortcut for: start <id>
-  launch_claude open [options] [<id>] [dir]
-                                         open a new or registered agent; registers it unless --once
+  launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
+  launch_claude list [--running|--autostart]
   launch_claude add <id> [options]       register only (does not start)
   launch_claude set <id> [options]       change saved settings
   launch_claude forget <id>              remove the registration
-  launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
-  launch_claude list [--running|--autostart]
   launch_claude help | -h | --help       show this help
   launch_claude --version                show the version
 
@@ -503,6 +507,27 @@ def wait_for_ready(target, timeout=None):
     return False, "timed out after %d seconds" % timeout, screen
 
 
+def close_remote_control_dialog(target):
+    """/remote-control leaves a dialog open; choose "Continue" so the prompt is usable.
+
+    Only presses Enter when "Continue" is the selected item, never anything else.
+    Returns True if a dialog was closed.
+    """
+    deadline = time.time() + DIALOG_TIMEOUT
+    last_screen, last_change = None, time.time()
+    while time.time() < deadline:
+        screen = capture_pane(target)
+        if RC_DIALOG_RE.search(screen):
+            tmux("send-keys", "-t", target, "Enter")
+            return True
+        if screen != last_screen:
+            last_screen, last_change = screen, time.time()
+        elif time.time() - last_change >= DIALOG_SETTLE:
+            break
+        time.sleep(POLL_INTERVAL / 2)
+    return False
+
+
 def screen_tail(screen, lines=10):
     rows = [row.rstrip() for row in screen.splitlines() if row.strip()]
     return "\n".join("    | " + row for row in rows[-lines:])
@@ -684,6 +709,7 @@ def launch_session(settings, agent_id, directory, port, mode, once=False):
             time.sleep(COMMAND_DELAY)
         if settings["remote_control"]:
             send_line(pane, "/remote-control " + agent_id)
+            close_remote_control_dialog(pane)
     elif not session_exists(agent_id):
         warn("[%s] the session ended right after it was started (%s)." % (agent_id, reason))
         return False

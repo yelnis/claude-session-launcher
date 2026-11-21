@@ -2,6 +2,8 @@
 
 # claude-session-launcher
 
+> **TL;DR** — 複数の Claude Code セッションをまとめて起動し、それぞれに `/remote-control` で接続できるようにするスクリプトです。Linux を再起動したとき(cron の `@reboot`)に、開発用のセッションが自動で立ち上がるようにしたくて作りました。ついでに、セッションに名前を付けて、作業ディレクトリや前回の会話を覚えておく機能も付けています。
+
 `launch_claude` は、名前を付けた複数の [Claude Code](https://code.claude.com/docs) セッションを tmux で起動するツールです。必要なら [ttyd](https://github.com/tsl0922/ttyd) でブラウザからも操作でき、セッションの準備ができたら `/remote-control` を自動で送ります。
 
 - セッションに ID(`writer`、`coder` など)を付けると、作業ディレクトリ・ポート・会話モードを覚える
@@ -9,7 +11,7 @@
 - `autostart` を付けたセッションは、cron の1行で、再起動後に立ち上がる
 - `open --once` で、終了時に自動で片付く使い捨てのセッションを開ける
 
-Python の単一ファイルで、標準ライブラリだけを使います。
+Python の単一ファイルで、標準ライブラリだけを使います。なお、このスクリプトは 100% Claude Code 製です(人間は、仕様を書いて、文句を言う係でした)。
 
 > **警告: ttyd は、既定では認証なしで起動します。** ポートに接続できる人は、誰でも端末を操作できます。[安全面](#安全面)を読んでください。
 
@@ -63,15 +65,15 @@ cron の `PATH` は最小限なので、上のようにフルパスで書いて�
 launch_claude                          ヘルプを表示して終了(終了コード 1)。何も起動しない
 launch_claude help | -h | --help       ヘルプ
 launch_claude --version                バージョンを表示
+launch_claude open [options] [<id>] [dir]   新規または登録済みを開く。--once 以外は自動で登録
 launch_claude start <id>...            登録済みの ID を起動
 launch_claude start --autostart        autostart=1 の全員を起動
 launch_claude <id>                     ショートカット(= start <id>)
-launch_claude open [options] [<id>] [dir]   新規または登録済みを開く。--once 以外は自動で登録
+launch_claude stop [<id>...]           停止。登録は残す。引数なしは、起動中の全員
+launch_claude list [--running|--autostart]
 launch_claude add <id> [options]       登録のみ(起動しない)
 launch_claude set <id> [options]       保存済みの設定を変更
 launch_claude forget <id>              登録を削除
-launch_claude stop [<id>...]           停止。登録は残す。引数なしは、起動中の全員
-launch_claude list [--running|--autostart]
 ```
 
 ID の形式は `^[A-Za-z0-9][A-Za-z0-9_-]*$` です。次の語は予約されていて、ID には使えません: `all`、`start`、`stop`、`open`、`add`、`set`、`forget`、`list`、`help`。
@@ -161,6 +163,15 @@ launch_claude start --autostart           # 今すぐ起動する(cron が実行
 
 その場かぎりの組み合わせは、`launch_claude start writer coder` のように ID を並べます。`open` で登録しただけのエージェントは、`--autostart` を付けないかぎり `autostart=0` です。
 
+ttyd の有無と autostart は別々の設定なので、ttyd なし(tmux のみ)のエージェントも autostart にできます。
+
+```bash
+launch_claude open --without-ttyd --autostart myproj   # 新しく登録する場合
+launch_claude set myproj --without-ttyd --autostart    # 登録済みのものを変える場合
+```
+
+この場合、再起動時には tmux のセッションだけが立ち上がり、ポートは使いません。`/remote-control` は ttyd と関係なく送られます。端末を直接見るときは、`tmux attach -t myproj` で入ります。なお、`--without-ttyd` にすると保存していたポートは消えます。あとで ttyd に戻すときに同じ URL にしたい場合は、`--port <n>` で指定してください。
+
 ## 保存先
 
 | 内容 | 場所 |
@@ -192,16 +203,16 @@ launch_claude start --autostart           # 今すぐ起動する(cron が実行
 
 ```
 Usage:
+  launch_claude open [options] [<id>] [dir]
+                                         open a new or registered agent; registers it unless --once
   launch_claude start <id>...            start registered agents
   launch_claude start --autostart        start every agent with autostart=1 (use this from cron @reboot)
   launch_claude <id>                     shortcut for: start <id>
-  launch_claude open [options] [<id>] [dir]
-                                         open a new or registered agent; registers it unless --once
+  launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
+  launch_claude list [--running|--autostart]
   launch_claude add <id> [options]       register only (does not start)
   launch_claude set <id> [options]       change saved settings
   launch_claude forget <id>              remove the registration
-  launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
-  launch_claude list [--running|--autostart]
   launch_claude help | -h | --help       show this help
   launch_claude --version                show the version
 
@@ -315,6 +326,7 @@ Environment:
   - 同じ `CLAUDE_CONFIG_DIR` で、`claude auth login` をやり直します。
   - 動いているセッションが新しい認証情報を読み直さない場合は、`stop` してから `start` します。
 - 画面のコピーが難しい場合は、tmux のコピーモードや `tmux capture-pane -p -J` を使います。
+- `/remote-control` を送ると、Claude Code が確認のダイアログ(Disconnect / Show QR code / Continue)を開きます。このツールは、`Continue` が選ばれているときだけ Enter を送って閉じます。もしダイアログが残っていたら、`tmux attach -t <id>` で入って、`Continue` を選んでください。
 - 画面に `? for shortcuts` か `shift+tab to cycle` が出たら、入力待ちになったと判定します(最大60秒)。待ちに失敗したときは、警告に画面の末尾10行が含まれます。この文言が、使っている Claude Code の画面と合っているかを確認してください。
 - 起動コマンドは、tmux の既定のシェルに文字として送ります。`VAR=value command` と `||` を使うので、POSIX 系のシェル(bash、zsh など)を想定しています。
 
