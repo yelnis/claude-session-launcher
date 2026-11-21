@@ -77,6 +77,17 @@ def test_relative_links_point_to_existing_files(name):
         assert (path.parent / target).exists(), "%s links to missing %s" % (name, target)
 
 
+@pytest.mark.parametrize("name", READMES)
+def test_readme_contents_list_every_section(name):
+    text = (ROOT / name).read_text(encoding="utf-8")
+    text = re.sub(r"(?s)```.*?```", "", text)  # "## ..." inside code blocks is not a heading
+    headings = re.findall(r"(?m)^## (.+)$", text)
+    listed = re.findall(r"(?m)^- \[([^\]]+)\]\(#([^)]+)\)$", text)
+    assert [title for title, _ in listed] == headings[1:]  # the first heading is the list itself
+    for title, anchor in listed:
+        assert anchor == title.lower().replace(" ", "-")
+
+
 def test_help_lists_every_command():
     module = load_script()
     for command in module.COMMANDS:

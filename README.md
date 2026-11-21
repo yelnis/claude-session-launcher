@@ -15,6 +15,26 @@ It is a single Python file that uses only the standard library. It is also 100% 
 
 > **Warning: ttyd has no authentication by default.** Anyone who can reach the port can operate your terminal. See [Security](#security).
 
+## Contents
+
+- [Requirements](#requirements)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Commands](#commands)
+- [Use cases](#use-cases)
+- [Settings](#settings)
+- [Security](#security)
+- [More](#more)
+- [Not confirmed](#not-confirmed)
+- [Development](#development)
+- [License](#license)
+
+Other pages:
+
+- [Reference](docs/reference.md): every command and option, conversation modes, autostart, operating notes
+- [Compared with other approaches](docs/comparison.md): the official agent view, Remote Control server mode, third-party tools
+- [Samples](examples/): settings files for common situations
+
 ## Requirements
 
 - `python3` 3.8 or newer (standard library only; nothing to `pip install`). If Python is missing, install it first, e.g. `sudo dnf install python3` or `sudo apt install python3`.
@@ -22,7 +42,13 @@ It is a single Python file that uses only the standard library. It is also 100% 
 - `ttyd` (not needed if you only use tmux sessions: `--without-ttyd`)
 - Claude Code, logged in with `claude auth login` if you use Remote Control
 
-Linux is the main target. macOS may work but is **untested**.
+Linux is the target. Nothing depends on the kernel or shell version, so it should work wherever the four items above do. It has been used on:
+
+- Ubuntu 24.04 LTS
+- Ubuntu 26.04 LTS (on WSL)
+- RHEL 9.7
+
+macOS may work but is **untested**.
 
 ## Install
 
