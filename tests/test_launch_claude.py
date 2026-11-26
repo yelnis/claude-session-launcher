@@ -69,10 +69,25 @@ def test_add_rejects_reserved_word(lc, workdir, capsys):
 def test_open_registers_and_starts(lc, workdir, capsys):
     assert lc.main(["open", "review"]) == 0
     agent = lc.load_agent("review")
-    assert agent == {"dir": str(workdir), "ttyd": True, "port": 7700, "mode": "new", "autostart": False,
+    assert agent == {"dir": str(workdir), "ttyd": False, "port": None, "mode": "new", "autostart": False,
                      "claude_config_dir": None}
-    assert lc.fake.launched == [("review", str(workdir), 7700, "new", False)]
+    assert lc.fake.launched == [("review", str(workdir), None, "new", False)]  # tmux only by default
     assert "Registered [review]" in capsys.readouterr().out
+
+
+def test_open_with_ttyd_picks_and_saves_a_port(lc, workdir):
+    assert lc.main(["open", "--with-ttyd", "web"]) == 0
+    assert (lc.load_agent("web")["ttyd"], lc.load_agent("web")["port"]) == (True, 7700)
+    assert lc.fake.launched == [("web", str(workdir), 7700, "new", False)]
+    assert lc.main(["add", "fixed", "--port", "7705"]) == 0  # --port alone implies ttyd
+    assert (lc.load_agent("fixed")["ttyd"], lc.load_agent("fixed")["port"]) == (True, 7705)
+
+
+def test_open_mode_option_points_to_the_right_options(lc, workdir, capsys):
+    assert lc.main(["open", "--mode", "continue", "a"]) == 1
+    err = capsys.readouterr().err
+    assert "--resume or --continue" in err and "launch_claude set <id> --mode continue" in err
+    assert lc.load_agent("a") is None and lc.fake.launched == []
 
 
 def test_open_options_are_saved(lc, workdir, tmp_path):
@@ -156,7 +171,7 @@ def test_port_with_ttyd_off_is_reserved(lc, workdir, capsys):
     assert lc.fake.launched == [("a", str(workdir), None, "new", False)]  # started without ttyd
     # the reserved port is not handed to anyone else
     assert lc.main(["add", "b", "--port", "7701"]) == 1
-    lc.main(["add", "c"])
+    lc.main(["add", "c", "--with-ttyd"])
     assert lc.load_agent("c")["port"] == 7700
 
 
@@ -172,9 +187,9 @@ def test_port_of_another_agent_is_refused(lc, workdir, capsys):
 
 
 def test_automatic_ports_skip_reserved_and_busy_ones(lc, workdir, monkeypatch):
-    lc.main(["add", "a"])
+    lc.main(["add", "a", "--with-ttyd"])
     monkeypatch.setattr(lc, "port_is_free", lambda port: port != 7701)
-    lc.main(["add", "b"])
+    lc.main(["add", "b", "--with-ttyd"])
     assert (lc.load_agent("a")["port"], lc.load_agent("b")["port"]) == (7700, 7702)
 
 
@@ -223,7 +238,7 @@ def test_add_twice_is_an_error(lc, workdir, capsys):
 
 
 def test_set_changes_settings(lc, workdir):
-    lc.main(["add", "a"])
+    lc.main(["add", "a", "--with-ttyd"])
     assert lc.main(["set", "a", "--autostart", "--mode", "resume", "--without-ttyd"]) == 0
     agent = lc.load_agent("a")
     # turning ttyd off keeps the port, so turning it on again gives the same URL
@@ -328,7 +343,7 @@ def test_forget_running_agent_asks_to_stop(lc, workdir, capsys):
 # ---- start --------------------------------------------------------------
 
 def test_start_autostart_only_starts_flagged_agents(lc, workdir):
-    lc.main(["add", "a", "--autostart", "--mode", "continue"])
+    lc.main(["add", "a", "--autostart", "--mode", "continue", "--with-ttyd"])
     lc.main(["add", "b"])
     lc.main(["add", "c", "--autostart", "--without-ttyd"])
     assert lc.main(["start", "--autostart"]) == 0
@@ -590,7 +605,7 @@ def test_missing_tmux_is_reported(lc, monkeypatch, capsys):
     monkeypatch.setattr(lc.shutil, "which", lambda command: None)
     with pytest.raises(lc.Error, match="'tmux' was not found"):
         lc.require("tmux")
-    with pytest.raises(lc.Error, match="--without-ttyd"):
+    with pytest.raises(lc.Error, match="only needed for sessions served in the browser.*crontab"):
         lc.require("ttyd")
 
 
@@ -667,6 +682,18 @@ def test_ttyd_port_option_and_automatic_port(lc, workdir, capsys):
     assert lc.main(["ttyd", "tmp1"]) == 0  # unregistered --once session, no saved port
     assert lc.fake.ttyd_started == [("a", 7720), ("tmp1", 7700)]
     assert lc.load_agent("a")["port"] is None
+
+
+def test_open_ttyd_warning_is_shown_once_and_only_when_open(lc, capsys):
+    base = {"ttyd_warning": True, "ttyd_credential": "", "ttyd_interface": ""}
+    for quiet in (dict(base, ttyd_warning=False), dict(base, ttyd_credential="me:secret"),
+                  dict(base, ttyd_interface="lo")):
+        lc.warn_open_ttyd(quiet)
+    assert capsys.readouterr().err == ""
+    lc.warn_open_ttyd(dict(base, ttyd_interface="eth0"))
+    assert "on eth0 without a password of its own" in capsys.readouterr().err
+    lc.warn_open_ttyd(base)  # the same run: not repeated for every agent
+    assert capsys.readouterr().err == ""
 
 
 def test_ttyd_no_warning_with_credential(lc, workdir, monkeypatch, capsys):

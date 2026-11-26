@@ -159,9 +159,10 @@ def test_claude_exiting_immediately_is_detected_quickly(sandbox):
 
 @pytest.mark.skipif(shutil.which("ttyd") is None, reason="ttyd is not installed")
 def test_ttyd_session_is_started_and_stopped(sandbox):
-    result = sandbox.run("open", "web")
+    result = sandbox.run("open", "--with-ttyd", "web")
     assert result.returncode == 0, result.stderr
     assert "http://" in result.stdout
+    assert "on every network interface without a password of its own" in result.stderr
     assert sorted(sandbox.sessions()) == ["ttyd-web", "web"]
     assert sandbox.run("stop", "web").returncode == 0
     assert sandbox.sessions() == []
@@ -192,8 +193,9 @@ def test_ttyd_on_loopback_only(sandbox):
     config = sandbox.home / ".config" / "launch_claude" / "config"
     config.parent.mkdir(parents=True)
     config.write_text("[launch_claude]\nttyd_interface = lo\n")
-    result = sandbox.run("open", "local")
+    result = sandbox.run("open", "--with-ttyd", "local")
     assert result.returncode == 0, result.stderr
+    assert "without a password" not in result.stderr  # loopback only: no warning
     assert "http://localhost:" in result.stdout  # started, verified as listening, shown as localhost
     assert sorted(sandbox.sessions()) == ["local", "ttyd-local"]
     assert "http://localhost:" in sandbox.run("list").stdout

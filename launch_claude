@@ -69,13 +69,15 @@ USAGE = """\
 Usage:
   launch_claude open [options] [<id>] [dir]
                                          open a new or registered agent; registers it unless --once
+                                         (tmux only unless --with-ttyd)
   launch_claude start <id>...            start registered agents
   launch_claude start --autostart        start every agent with autostart=1 (use this from cron @reboot)
   launch_claude <id>                     shortcut for: start <id>
   launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
                                          (the session you run it in is kept unless --stop-own-session)
   launch_claude list [--running|--autostart]
-  launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent, for now only (settings unchanged)
+  launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent until --off or stop
+                                         (saved settings unchanged)
   launch_claude ttyd <id> --off          close it again; the agent keeps running
   launch_claude add <id> [options]       register only (does not start)
   launch_claude set <id> [options]       change saved settings
@@ -87,8 +89,9 @@ open options:
   --resume           resume the last conversation of this agent (this launch only)
   --continue, -c     continue the latest conversation in the directory and rename it to <id>
   --once             throwaway: always a new conversation, not registered, auto id (once-HHMMSS)
-                     if <id> is omitted, no ttyd by default, cleaned up when claude exits
-  --with-ttyd        serve the session with ttyd
+                     if <id> is omitted, cleaned up when claude exits
+  --with-ttyd        also serve the session in the browser with ttyd, on every start
+                     (default for a new agent: tmux only)
   --without-ttyd     tmux only (alias: --no-ttyd); a saved or given --port is kept for later
   --port <n>         ttyd port (implies ttyd unless --without-ttyd; default: first free port
                      in the configured range)
@@ -98,7 +101,7 @@ open options:
   --autostart        mark the agent for 'start --autostart'
 
 add / set options:
-  --dir <path>  --port <n>  --with-ttyd | --without-ttyd  --claude-config-dir <path>
+  --dir <path>  --port <n>  --with-ttyd | --without-ttyd (default)  --claude-config-dir <path>
   --mode new|resume|continue             conversation used by 'start' (default: new)
   --autostart | --no-autostart
 
@@ -443,9 +446,10 @@ def host_ip():
 
 def require(command):
     if shutil.which(command) is None:
-        hint = " (only needed for sessions served in the browser; try --without-ttyd)" \
-            if command == "ttyd" else ""
-        raise Error("'%s' was not found in PATH. Please install it%s." % (command, hint))
+        hint = " (only needed for sessions served in the browser)" if command == "ttyd" else ""
+        raise Error("'%s' was not found in PATH. Please install it%s. If it is installed and this runs "
+                    "from cron, add a PATH=... line to the crontab: cron uses a short PATH."
+                    % (command, hint))
 
 
 def tmux(*args):
@@ -797,6 +801,7 @@ def launch_session(settings, agent_id, directory, port, mode, once=False):
     if port:
         try:
             start_ttyd(settings, agent_id, port)
+            warn_open_ttyd(settings)
         except Error as e:
             warn("%s The session runs without ttyd." % e)
             port = None
@@ -850,6 +855,25 @@ def start_ttyd(settings, agent_id, port):
         time.sleep(0.2)
     kill_session(name)
     raise Error("[%s] ttyd did not start on port %d (the port may have been taken)." % (agent_id, port))
+
+
+_warned_open_ttyd = False
+
+
+def warn_open_ttyd(settings):
+    """Warn, once per run, that a ttyd was started that anyone on the network can use.
+
+    We only know what we passed to ttyd; a proxy, VPN or firewall is invisible from here.
+    """
+    global _warned_open_ttyd
+    if (_warned_open_ttyd or not settings["ttyd_warning"] or settings["ttyd_credential"]
+            or settings["ttyd_interface"] in LOOPBACK):
+        return
+    _warned_open_ttyd = True
+    where = "on " + (settings["ttyd_interface"] or "every network interface")
+    warn("ttyd was started %s without a password of its own. Unless the port is protected some "
+         "other way, anyone who can reach it can use the terminal. Set ttyd_interface = lo or "
+         "ttyd_credential in the config file, or silence this with ttyd_warning = 0." % where)
 
 
 def stop_session(agent_id):
@@ -918,7 +942,9 @@ def config_dir_arg(value):
 
 def new_agent(settings, agent_id, args, mode="new"):
     """Settings for a new registration from --dir/--port/--with(out)-ttyd/--autostart."""
-    agent = {"dir": resolve_dir(args.directory or os.getcwd()), "ttyd": args.ttyd is not False,
+    # ttyd is opt-in: --with-ttyd, or --port alone (which implies it).
+    with_ttyd = args.ttyd is True or (args.ttyd is None and args.port is not None)
+    agent = {"dir": resolve_dir(args.directory or os.getcwd()), "ttyd": with_ttyd,
              "port": None, "mode": mode, "autostart": bool(args.autostart),
              "claude_config_dir": config_dir_arg(args.claude_config_dir or "")}
     if args.port is not None:
@@ -1002,9 +1028,14 @@ def cmd_open(argv):
     parser.add_argument("--continue", "-c", dest="cont", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--autostart", action="store_const", const=True, default=None)
+    parser.add_argument("--mode")
     add_ttyd_options(parser)
     parser.add_argument("positional", nargs="*")
     args = parser.parse_args(argv)
+    if args.mode is not None:
+        raise Error("open: --mode is an option of 'add' and 'set'. For this start only, use --resume or "
+                    "--continue. To save the mode that 'start' uses: %s set <id> --mode %s"
+                    % (PROG, args.mode))
 
     if len(args.positional) > 2:
         raise Error("open: too many arguments: %s" % " ".join(args.positional))
@@ -1229,12 +1260,7 @@ def cmd_ttyd(argv):
     start_ttyd(settings, agent_id, port)
     info("Opened ttyd for [%s]: %s" % (agent_id, access_text(settings, agent_id, port)))
     info("Close it with: %s ttyd %s --off" % (PROG, agent_id))
-    if (settings["ttyd_warning"] and not settings["ttyd_credential"]
-            and settings["ttyd_interface"] not in LOOPBACK):
-        # We only know what we passed to ttyd; a proxy, VPN or firewall is invisible from here.
-        warn("ttyd was started without a password of its own. Unless port %d is protected some "
-             "other way, anyone who can reach it can use this terminal. "
-             "(Silence this with ttyd_warning = 0 in the config file.)" % port)
+    warn_open_ttyd(settings)
     return 0
 
 

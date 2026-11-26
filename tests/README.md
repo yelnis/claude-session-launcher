@@ -55,7 +55,9 @@ None of the tests starts the real Claude Code, and none touches your own setting
 
 | Test | Checks |
 |---|---|
-| `test_open_registers_and_starts` | A new id is registered with the current directory and started |
+| `test_open_registers_and_starts` | A new id is registered with the current directory and started, tmux only and without a port |
+| `test_open_with_ttyd_picks_and_saves_a_port` | `--with-ttyd` turns ttyd on and saves the first free port; `--port` alone implies ttyd |
+| `test_open_mode_option_points_to_the_right_options` | `open --mode` fails with a message that names `--resume`, `--continue` and `set <id> --mode`; nothing is registered or started |
 | `test_open_options_are_saved` | `--without-ttyd`, `--autostart` and a directory given to `open` are saved; no port is written when ttyd is off |
 | `test_open_registered_uses_saved_settings_and_new_conversation` | A registered id opens with its saved directory and port, in a new conversation |
 | `test_open_overrides_are_saved_and_reported` | Options given for a registered id replace the saved ones, and the change is printed |
@@ -137,7 +139,7 @@ None of the tests starts the real Claude Code, and none touches your own setting
 | `test_claude_config_dir_is_quoted_and_once_cleans_up` | A config directory with a space is quoted; a throwaway session's command ends with its own cleanup |
 | `test_ttyd_is_started_with_credential` | The password is passed to `ttyd -c` |
 | `test_pretrust_writes_claude_json` | The work directory is marked as trusted in `.claude.json`; what is already there, and the file's permissions, are kept |
-| `test_missing_tmux_is_reported` | A missing `tmux` or `ttyd` gives a clear error (for ttyd, with a hint at `--without-ttyd`) |
+| `test_missing_tmux_is_reported` | A missing `tmux` or `ttyd` gives a clear error (for ttyd, saying it is only needed for the browser terminal), with a hint at cron's short `PATH` |
 | `test_remote_control_dialog_is_closed_only_on_continue` | The Remote Control dialog is answered with Enter only while "Continue" is selected |
 | `test_ttyd_that_cannot_bind_is_reported_and_session_keeps_running` | If ttyd does not come up on the port, that is reported, no URL is shown, and the agent keeps running |
 | `test_started_ttyd_records_its_port` | A ttyd that is listening is recorded on the session, so `list` can show it |
@@ -148,6 +150,7 @@ None of the tests starts the real Claude Code, and none touches your own setting
 |---|---|
 | `test_ttyd_opens_on_saved_port_without_changing_settings` | `ttyd <id>` opens on the saved port, warns about the missing password, changes no saved setting, and `--off` closes it |
 | `test_ttyd_port_option_and_automatic_port` | `--port`, and a free port when none is saved |
+| `test_open_ttyd_warning_is_shown_once_and_only_when_open` | The warning used by `open`, `start` and `ttyd`: silent with `ttyd_warning = 0`, a password or a loopback interface; names the interface; shown once per run |
 | `test_ttyd_no_warning_with_credential` | No warning when a password is set |
 | `test_ttyd_warning_can_be_turned_off` | `ttyd_warning = 0` silences the warning |
 | `test_ttyd_errors` | Not running, unknown id, a port of another agent, `--off` with `--port`, `--off` when nothing is open |
@@ -189,9 +192,9 @@ Skipped when `tmux` is not installed; the ttyd tests also when `ttyd` is not ins
 | `test_stop_keeps_the_session_it_is_run_in` | With the environment tmux gives to a process inside a session: `stop <own id>` fails and stops nothing, `stop` alone keeps that session, `stop --stop-own-session` stops it |
 | `test_once_is_listed_stopped_and_cleans_up_after_exit` | A throwaway session is listed and leaves no registration; it disappears by itself when claude exits; `stop` alone also finds one |
 | `test_claude_exiting_immediately_is_detected_quickly` | When claude exits at once, the tool gives up in seconds and shows the last screen lines |
-| `test_ttyd_session_is_started_and_stopped` | `open` starts a real ttyd next to the session and prints a URL; `stop` ends both |
+| `test_ttyd_session_is_started_and_stopped` | `open --with-ttyd` starts a real ttyd next to the session, prints a URL and warns that it is open without a password; `stop` ends both |
 | `test_ttyd_can_be_opened_and_closed_on_a_running_session` | `ttyd <id>` and `ttyd <id> --off` on a running session; the agent keeps running and its saved setting stays off |
-| `test_ttyd_on_loopback_only` | With `ttyd_interface = lo` a real ttyd starts, and `open` and `list` show a `localhost` URL |
+| `test_ttyd_on_loopback_only` | With `ttyd_interface = lo` a real ttyd starts without the warning, and `open` and `list` show a `localhost` URL |
 
 ## test_docs.py
 
