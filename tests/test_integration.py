@@ -46,14 +46,21 @@ class Sandbox:
             "SHELL": "/bin/sh",
         })
 
-    def run(self, *args):
+    def run(self, *args, **extra_env):
         return subprocess.run([sys.executable, str(SCRIPT)] + list(args), cwd=str(self.work),
-                              env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              env=dict(self.env, **extra_env), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               universal_newlines=True, timeout=120)
 
     def tmux(self, *args):
         return subprocess.run(["tmux"] + list(args), env=self.env, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, universal_newlines=True)
+
+    def inside(self, session):
+        """Environment variables that tmux gives to a process in this session."""
+        show = self.tmux("display-message", "-p", "-t", "=%s:" % session,
+                         "#{socket_path},#{pid},0 #{pane_id}")
+        tmux_value, pane = show.stdout.split()
+        return {"TMUX": tmux_value, "TMUX_PANE": pane}
 
     def sessions(self):
         return self.tmux("list-sessions", "-F", "#{session_name}").stdout.split()
@@ -118,6 +125,24 @@ def test_once_is_listed_stopped_and_cleans_up_after_exit(sandbox):
     # stop without arguments also finds the unregistered --once session
     assert "tmp2" in sandbox.sessions()
     assert sandbox.run("stop").returncode == 0
+    assert sandbox.sessions() == []
+
+
+def test_stop_keeps_the_session_it_is_run_in(sandbox):
+    for name in ("alpha", "beta"):
+        assert sandbox.run("open", "--without-ttyd", name).returncode == 0
+    inside = sandbox.inside("alpha")
+
+    named = sandbox.run("stop", "alpha", **inside)
+    assert named.returncode == 1 and "--stop-own-session" in named.stderr
+    assert sorted(sandbox.sessions()) == ["alpha", "beta"]
+
+    everything = sandbox.run("stop", **inside)
+    assert everything.returncode == 0
+    assert "[alpha] is the session this command runs in; not stopped" in everything.stdout
+    assert sandbox.sessions() == ["alpha"]
+
+    assert sandbox.run("stop", "--stop-own-session", **inside).returncode == 0
     assert sandbox.sessions() == []
 
 

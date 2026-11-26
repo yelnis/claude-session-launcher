@@ -90,7 +90,10 @@ None of the tests starts the real Claude Code, and none touches your own setting
 | `test_set_unknown_agent_is_an_error` | `set` on an unknown id fails |
 | `test_stop_keeps_registration` | `stop <id>` stops the session and keeps the registration |
 | `test_stop_without_arguments_stops_everything_including_once` | `stop` alone stops every running session, throwaway ones included; registrations stay |
-| `test_stop_handles_own_session_last` | When run from inside a managed session, that session is stopped last |
+| `test_stop_without_arguments_keeps_own_session` | Run from inside a managed session, `stop` alone stops the others, keeps that session and says so; a second run says nothing else is running |
+| `test_stop_own_session_by_id_is_an_error_and_stops_nothing` | Naming the session the command runs in is an error, and the other named sessions are not stopped either |
+| `test_stop_own_session_when_asked_stops_it_last` | With `--stop-own-session` the own session is stopped too, after the others; also when it is named |
+| `test_stop_from_a_session_of_another_tool_stops_everything` | Inside a tmux session that this tool did not start, `stop` alone stops everything as before |
 | `test_stop_unknown_is_an_error` | `stop` on an unknown id fails |
 | `test_forget_removes_registration_and_state` | `forget` removes the registration and the state file |
 | `test_forget_running_agent_asks_to_stop` | `forget` refuses a running agent |
@@ -183,6 +186,7 @@ Skipped when `tmux` is not installed; the ttyd tests also when `ttyd` is not ins
 | Test | Checks |
 |---|---|
 | `test_open_list_stop` | `open` starts a real tmux session, the stub gets the expected arguments and `/remote-control`, `list` shows it, `start` says it already runs, `stop` ends it |
+| `test_stop_keeps_the_session_it_is_run_in` | With the environment tmux gives to a process inside a session: `stop <own id>` fails and stops nothing, `stop` alone keeps that session, `stop --stop-own-session` stops it |
 | `test_once_is_listed_stopped_and_cleans_up_after_exit` | A throwaway session is listed and leaves no registration; it disappears by itself when claude exits; `stop` alone also finds one |
 | `test_claude_exiting_immediately_is_detected_quickly` | When claude exits at once, the tool gives up in seconds and shows the last screen lines |
 | `test_ttyd_session_is_started_and_stopped` | `open` starts a real ttyd next to the session and prints a URL; `stop` ends both |

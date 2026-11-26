@@ -265,12 +265,43 @@ def test_stop_without_arguments_stops_everything_including_once(lc, workdir):
     assert lc.registered_ids() == ["a", "idle"]
 
 
-def test_stop_handles_own_session_last(lc, workdir, monkeypatch):
+def test_stop_without_arguments_keeps_own_session(lc, workdir, monkeypatch, capsys):
     for name in ("a", "b", "c"):
         lc.main(["open", name])
     monkeypatch.setattr(lc, "current_session", lambda: "a")
-    lc.main(["stop"])
+    assert lc.main(["stop"]) == 0
+    assert [k for k in lc.fake.killed if not k.startswith("ttyd-")] == ["b", "c"]
+    assert lc.session_exists("a")
+    assert "[a] is the session this command runs in; not stopped" in capsys.readouterr().out
+    assert lc.main(["stop"]) == 0
+    assert "Nothing else is running." in capsys.readouterr().out
+
+
+def test_stop_own_session_by_id_is_an_error_and_stops_nothing(lc, workdir, monkeypatch, capsys):
+    for name in ("a", "b"):
+        lc.main(["open", name])
+    monkeypatch.setattr(lc, "current_session", lambda: "a")
+    assert lc.main(["stop", "b", "a"]) == 1
+    assert "--stop-own-session" in capsys.readouterr().err
+    assert lc.fake.killed == []
+
+
+def test_stop_own_session_when_asked_stops_it_last(lc, workdir, monkeypatch):
+    for name in ("a", "b", "c"):
+        lc.main(["open", name])
+    monkeypatch.setattr(lc, "current_session", lambda: "a")
+    assert lc.main(["stop", "--stop-own-session"]) == 0
     assert [k for k in lc.fake.killed if not k.startswith("ttyd-")] == ["b", "c", "a"]
+    lc.main(["open", "a"])
+    assert lc.main(["stop", "--stop-own-session", "a"]) == 0
+    assert not lc.session_exists("a")
+
+
+def test_stop_from_a_session_of_another_tool_stops_everything(lc, workdir, monkeypatch):
+    lc.main(["open", "a"])
+    monkeypatch.setattr(lc, "current_session", lambda: "somebody-else")
+    assert lc.main(["stop"]) == 0
+    assert not lc.session_exists("a")
 
 
 def test_stop_unknown_is_an_error(lc, capsys):
@@ -531,7 +562,7 @@ def test_claude_config_dir_is_quoted_and_once_cleans_up(launcher, workdir):
     assert launcher.main(["open", "--once", "tmp1"]) == 0
     command = typed(launcher)[0]
     assert command.startswith("CLAUDE_CONFIG_DIR='/opt/my claude' claude --session-id ")
-    assert command.endswith("launch_claude stop tmp1 >/dev/null 2>&1")
+    assert command.endswith("launch_claude stop --stop-own-session tmp1 >/dev/null 2>&1")
     assert os.path.realpath(launcher.__file__) in command
     assert launcher.registered_ids() == []
     assert not launcher.state_path("tmp1").exists()

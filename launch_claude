@@ -73,6 +73,7 @@ Usage:
   launch_claude start --autostart        start every agent with autostart=1 (use this from cron @reboot)
   launch_claude <id>                     shortcut for: start <id>
   launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
+                                         (the session you run it in is kept unless --stop-own-session)
   launch_claude list [--running|--autostart]
   launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent, for now only (settings unchanged)
   launch_claude ttyd <id> --off          close it again; the agent keeps running
@@ -754,7 +755,8 @@ def launch_session(settings, agent_id, directory, port, mode, once=False):
     command = build_claude_command(settings, agent_id, mode, session_id)
     if once:
         # When claude exits, clean up tmux/ttyd by calling ourselves.
-        cleanup = " ".join(shlex.quote(part) for part in self_command() + ["stop", agent_id])
+        stop_me = self_command() + ["stop", "--stop-own-session", agent_id]
+        cleanup = " ".join(shlex.quote(part) for part in stop_me)
         command += "; " + cleanup + " >/dev/null 2>&1"
 
     result = tmux("new-session", "-d", "-s", agent_id, "-x", "160", "-y", "48", "-c", directory)
@@ -1152,8 +1154,10 @@ def cmd_forget(argv):
 def cmd_stop(argv):
     parser = make_parser("stop")
     parser.add_argument("ids", nargs="*")
+    parser.add_argument("--stop-own-session", dest="own", action="store_true")
     args = parser.parse_args(argv)
     sessions = managed_sessions()
+    me = current_session()
     if args.ids:
         targets = []
         for agent_id in args.ids:
@@ -1161,13 +1165,19 @@ def cmd_stop(argv):
                 targets.append(agent_id)
             else:
                 raise Error("'%s' is neither registered nor a running session of %s" % (agent_id, PROG))
+        if me in targets and not args.own:
+            raise Error("[%s] is the session this command runs in; nothing was stopped. Stop it from "
+                        "another terminal, or add --stop-own-session." % me)
     else:
         targets = sorted(set(sessions) | set(i for i in registered_ids() if session_exists(i)))
+        if me in targets and not args.own:
+            targets.remove(me)
+            info("[%s] is the session this command runs in; not stopped (--stop-own-session stops it too)."
+                 % me)
         if not targets:
-            info("Nothing is running.")
+            info("Nothing is running." if not me else "Nothing else is running.")
             return 0
     # If we are inside one of the targets, stop it last so the others are not left behind.
-    me = current_session()
     targets.sort(key=lambda name: name == me)
     for agent_id in targets:
         if agent_id in sessions or session_exists(agent_id) or session_exists(ttyd_session(agent_id)):
