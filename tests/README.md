@@ -195,6 +195,26 @@ None of the tests starts the real Claude Code, and none touches your own setting
 | `test_failed_write_leaves_no_temporary_file` | When a settings file cannot be replaced, the error is passed on and no temporary file is left |
 | `test_pretrust_failure_leaves_no_temporary_file` | When `.claude.json` cannot be replaced, marking a directory as trusted reports failure and leaves no temporary file |
 
+### attach
+
+| Test | Checks |
+|---|---|
+| `test_attach_enters_the_named_session` | `attach <id>` enters the session of that running agent |
+| `test_attach_without_id_needs_exactly_one_running_session` | Without an id: an error when nothing runs, the session when one runs, a list when several run |
+| `test_attach_does_not_start_anything` | A stopped agent gives an error that names `start`; an unknown id is an error; nothing is started |
+| `test_attach_to_the_own_session_does_nothing` | Naming the session the command runs in only says so |
+| `test_attach_session_needs_a_terminal_and_does_not_nest_tmux` | Without a terminal it is an error; outside tmux the process becomes `tmux attach-session`; inside tmux the client is switched |
+
+### completion
+
+| Test | Checks |
+|---|---|
+| `test_completion_prints_a_bash_script_for_every_command` | The script registers itself for `launch_claude` and has an entry for every command |
+| `test_completion_offers_only_options_that_the_help_lists` | Every option the completion offers is in the help text |
+| `test_completion_ids_by_state` | `completion ids running`, `stopped` and `registered` print the right IDs, one per line |
+| `test_completion_ids_stay_silent_when_something_is_wrong` | A failure while listing IDs prints nothing, so the shell prompt is not disturbed |
+| `test_completion_for_another_shell_is_an_error` | Only bash is supported; `attach` and `completion` cannot be IDs |
+
 ## test_integration.py
 
 Skipped when `tmux` is not installed; the ttyd tests also when `ttyd` is not installed.
@@ -208,6 +228,7 @@ Skipped when `tmux` is not installed; the ttyd tests also when `ttyd` is not ins
 | `test_ttyd_session_is_started_and_stopped` | `open --with-ttyd` starts a real ttyd next to the session, prints a URL and warns that it is open without a password; `stop` ends both |
 | `test_ttyd_can_be_opened_and_closed_on_a_running_session` | `ttyd <id>` and `ttyd <id> --off` on a running session; the agent keeps running and its saved setting stays off |
 | `test_ttyd_on_loopback_only` | With `ttyd_interface = lo` a real ttyd starts without the warning, and `open` and `list` show a `localhost` URL |
+| `test_bash_completion_with_real_sessions` | In a real bash with real sessions: commands, running, stopped and registered IDs, options, `--mode` values and directories are completed |
 
 ## test_docs.py
 

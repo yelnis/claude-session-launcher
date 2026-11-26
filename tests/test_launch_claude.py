@@ -3,6 +3,8 @@ import json
 import os
 import subprocess
 
+from types import SimpleNamespace
+
 import pytest
 
 from conftest import load_script
@@ -930,3 +932,112 @@ def test_pretrust_failure_leaves_no_temporary_file(launcher, workdir, tmp_path, 
     before = sorted(path.name for path in (tmp_path / "home").iterdir())
     assert launcher.pretrust_dir(launcher.load_settings(), str(workdir)) is False
     assert sorted(path.name for path in (tmp_path / "home").iterdir()) == before
+
+
+# ---- attach -------------------------------------------------------------
+
+@pytest.fixture
+def attached(lc, monkeypatch):
+    """Records which session 'attach' would enter instead of entering it."""
+    entered = []
+    monkeypatch.setattr(lc.shutil, "which", lambda command: "/usr/bin/" + command)
+    monkeypatch.setattr(lc, "attach_session", lambda name: entered.append(name) or 0)
+    return entered
+
+
+def test_attach_enters_the_named_session(lc, workdir, attached):
+    lc.main(["open", "a"])
+    lc.main(["open", "b"])
+    assert lc.main(["attach", "b"]) == 0
+    assert attached == ["b"]
+
+
+def test_attach_without_id_needs_exactly_one_running_session(lc, workdir, attached, capsys):
+    assert lc.main(["attach"]) == 1
+    assert "nothing is running" in capsys.readouterr().err
+    lc.main(["open", "a"])
+    assert lc.main(["attach"]) == 0 and attached == ["a"]
+    lc.fake.run("once-1", kind="once")
+    assert lc.main(["attach"]) == 1
+    assert "which one? Running: a, once-1" in capsys.readouterr().err
+    assert attached == ["a"]
+
+
+def test_attach_does_not_start_anything(lc, workdir, attached, capsys):
+    lc.main(["add", "idle"])
+    assert lc.main(["attach", "idle"]) == 1
+    assert "Start it with: launch_claude start idle" in capsys.readouterr().err
+    assert lc.main(["attach", "nobody"]) == 1
+    assert "neither registered nor a running session" in capsys.readouterr().err
+    assert attached == [] and lc.fake.launched == []
+
+
+def test_attach_to_the_own_session_does_nothing(lc, workdir, attached, monkeypatch, capsys):
+    lc.main(["open", "a"])
+    monkeypatch.setattr(lc, "current_session", lambda: "a")
+    assert lc.main(["attach", "a"]) == 0
+    assert "[a] is the session you are in." in capsys.readouterr().out
+    assert attached == []
+
+
+def test_attach_session_needs_a_terminal_and_does_not_nest_tmux(lc, monkeypatch):
+    calls = []
+    monkeypatch.setattr(lc.os, "execvp", lambda program, argv: calls.append(argv))
+    monkeypatch.setattr(lc, "tmux", lambda *args: calls.append(list(args)) or SimpleNamespace(
+        returncode=0, stdout="", stderr=""))
+    monkeypatch.setattr(lc.sys.stdin, "isatty", lambda: False)
+    with pytest.raises(lc.Error, match="attach needs a terminal"):
+        lc.attach_session("a")
+    assert calls == []
+    monkeypatch.setattr(lc.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(lc.sys.stdout, "isatty", lambda: True)
+    lc.attach_session("a")  # outside tmux: our process becomes "tmux attach"
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1,0")
+    assert lc.attach_session("a") == 0  # inside tmux: the client is switched
+    assert calls == [["tmux", "attach-session", "-t", "=a"], ["switch-client", "-t", "=a"]]
+
+
+# ---- completion ---------------------------------------------------------
+
+def test_completion_prints_a_bash_script_for_every_command(lc, capsys):
+    assert lc.main(["completion", "bash"]) == 0
+    script = capsys.readouterr().out
+    assert "complete -F _launch_claude launch_claude" in script
+    assert " ".join(lc.COMMANDS) + " help --version" in script
+    assert "new resume continue" in script
+    for command in lc.COMMANDS:
+        assert "%s) options=" % command in script
+    assert set(lc.COMPLETION) == set(lc.COMMANDS)
+
+
+def test_completion_offers_only_options_that_the_help_lists(lc):
+    for command, (options, _) in lc.COMPLETION.items():
+        for option in options:
+            assert option in lc.USAGE, (command, option)
+            # and the command really accepts it: an unknown option would be "unrecognized arguments"
+    assert lc.main(["stop", "--stop-own-session", "--bogus"]) == 1
+
+
+def test_completion_ids_by_state(lc, workdir, capsys):
+    lc.main(["add", "idle"])
+    lc.main(["open", "busy"])
+    lc.fake.run("once-1", kind="once")
+    capsys.readouterr()
+    for kind, expected in (("running", "busy\nonce-1\n"), ("stopped", "idle\n"),
+                           ("registered", "busy\nidle\n")):
+        assert lc.main(["completion", "ids", kind]) == 0
+        assert capsys.readouterr() == (expected, "")
+
+
+def test_completion_ids_stay_silent_when_something_is_wrong(lc, monkeypatch, capsys):
+    def broken(sessions=None):
+        raise OSError("no tmux here")
+    monkeypatch.setattr(lc, "running_ids", broken)
+    assert lc.main(["completion", "ids", "running"]) == 0
+    assert capsys.readouterr() == ("", "")
+
+
+def test_completion_for_another_shell_is_an_error(lc, capsys):
+    assert lc.main(["completion", "zsh"]) == 1
+    assert "only bash is supported" in capsys.readouterr().err
+    assert lc.main(["add", "completion"]) == 1 and lc.main(["add", "attach"]) == 1  # reserved words

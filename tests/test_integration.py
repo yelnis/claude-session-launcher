@@ -199,3 +199,46 @@ def test_ttyd_on_loopback_only(sandbox):
     assert "http://localhost:" in result.stdout  # started, verified as listening, shown as localhost
     assert sorted(sandbox.sessions()) == ["local", "ttyd-local"]
     assert "http://localhost:" in sandbox.run("list").stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is not installed")
+def test_bash_completion_with_real_sessions(sandbox, tmp_path):
+    assert sandbox.run("open", "alpha").returncode == 0
+    assert sandbox.run("add", "beta", "--dir", str(sandbox.work)).returncode == 0
+    (sandbox.work / "sub dir").mkdir()
+    script = tmp_path / "try.bash"
+    script.write_text(r'''
+launch_claude() { "$PYTHON" "$SCRIPT" "$@"; }
+eval "$(launch_claude completion bash)"
+try() { COMP_WORDS=("$@"); COMP_CWORD=$(( $# - 1 )); _launch_claude; (IFS=,; echo "${COMPREPLY[*]}"); }
+try launch_claude at
+try launch_claude attach ""
+try launch_claude stop ""
+try launch_claude start ""
+try launch_claude b
+try launch_claude set ""
+try launch_claude set beta --mo
+try launch_claude set beta --mode re
+try launch_claude stop -
+try launch_claude add new --dir su
+try launch_claude open gamma s
+try launch_claude list ""
+''')
+    result = subprocess.run(["bash", str(script)], cwd=str(sandbox.work), stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, universal_newlines=True, timeout=120,
+                            env=dict(sandbox.env, PYTHON=sys.executable, SCRIPT=str(SCRIPT)))
+    assert result.stderr == ""
+    assert result.stdout.splitlines() == [
+        "attach",            # a command from its first letters
+        "alpha",             # attach: running
+        "alpha",             # stop: running
+        "beta",              # start: registered and stopped
+        "beta",              # the shortcut "launch_claude <id>"
+        "alpha,beta",        # set: everything registered
+        "--mode",
+        "resume",
+        "--stop-own-session",
+        "sub dir",           # --dir: directories
+        "sub dir",           # open <id> <dir>
+        "",                  # list takes no id
+    ]

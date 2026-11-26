@@ -75,7 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/yelnis/claude-session-launcher/main
 ```bash
 cd ~/projects/site
 launch_claude open web            # tmux で、新しい会話を起動。"web" として登録される
-tmux attach -t web                # 端末を開く(離れるには Ctrl-b d)。claude.ai からも使える
+launch_claude attach web          # 端末を開く(離れるには Ctrl-b d)。claude.ai からも使える
 launch_claude list                # 登録済みのものと、起動中のものを見る
 launch_claude stop web            # 止める。登録は残る
 launch_claude start web           # 保存済みの設定で、もう一度起動する
@@ -110,7 +110,7 @@ launch_claude ttyd web                  # 起動中のエージェント: "ttyd 
 - 最初に起動する前に、一度ログインしてください(`claude auth login`)。これは、ツールが代わりに行うことはできません。
 - 作業ディレクトリは、Claude Code の「信頼済み」として記録されるので、信頼の確認で起動が止まることはありません。
 - 起動は、Claude Code の入力待ちを最大60秒待ってから、`/remote-control <id>` を入力します。そのあと Claude Code がダイアログ(Disconnect / Show QR code / Continue)を出します。`Continue` が選ばれていれば、ツールが閉じます。開いたままのときは、`tmux attach -t <id>` で入って `Continue` を選んでください。
-- 起動に失敗したときは、画面の最後の数行がメッセージに出ます。続きは `tmux attach -t <id>` で見られます。
+- 起動に失敗したときは、画面の最後の数行がメッセージに出ます。続きは `launch_claude attach <id>` で見られます。
 - claude.ai のログインは、作者の環境では3〜4週間で切れました。切れると、ログインし直すまで Remote Control がつながりません。
 
 ## コマンド
@@ -126,6 +126,8 @@ launch_claude start --autostart        autostart=1 の全員を起動
 launch_claude <id>                     ショートカット(= start <id>)
 launch_claude stop [<id>...]           停止。登録は残す。引数なしは、起動中の全員
                                        (実行したセッション自身は残す。止めるには --stop-own-session)
+launch_claude attach [<id>]            起動中のエージェントの tmux セッションに入る(離れるには Ctrl-b d)
+                                       ID なしは、起動中が1つだけのとき
 launch_claude list [--running|--autostart]
 launch_claude ttyd <id> [--port <n>]   起動中のエージェントに ttyd を開く。--off か stop まで
                                        (保存済みの設定は変えない)
@@ -133,11 +135,22 @@ launch_claude ttyd <id> --off          閉じる。エージェントは動い�
 launch_claude add <id> [options]       登録のみ(起動しない)
 launch_claude set <id> [options]       保存済みの設定を変更
 launch_claude forget <id>              登録を削除
+launch_claude completion bash          bash の補完スクリプトを出力
 ```
 
-ID の形式は `^[A-Za-z0-9][A-Za-z0-9_-]*$` です。次の語は予約されていて、ID には使えません: `all`、`start`、`stop`、`open`、`add`、`set`、`forget`、`list`、`ttyd`、`help`。
+ID の形式は `^[A-Za-z0-9][A-Za-z0-9_-]*$` です。次の語は予約されていて、ID には使えません: `all`、`start`、`stop`、`open`、`attach`、`add`、`set`、`forget`、`list`、`ttyd`、`completion`、`help`。
 
 ID は、tmux のセッション、Claude Code の会話、Remote Control のセッションの3つの名前になります。Claude Code はこの名前を claude.ai に表示し、ほかの Claude Code のセッションは、この名前を宛先にしてメッセージを送ります。ID の重複を防ぐのは1台のマシンの中だけなので、複数のマシンで使うときは、マシンの間で重ならない ID を付けてください。
+
+### bash の補完
+
+`~/.bashrc` に次の行を足します。
+
+```bash
+eval "$(launch_claude completion bash)"
+```
+
+Tab で、コマンド、そのオプション、場面に合う ID を補完します。`attach`、`stop`、`ttyd` のあとは起動中のエージェント、`start` と `open` のあとは停止中のもの、`set` と `forget` のあとは登録済みのすべてです。コマンドを短くしたいときは、その行の下に `alias lc=launch_claude` と `complete -F _launch_claude lc` を足します。
 
 ### オプション
 

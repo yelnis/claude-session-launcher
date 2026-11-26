@@ -70,6 +70,18 @@ launch_claude ttyd review --off        # close; the agent keeps running
 
 A ttyd is only reported as open when this tool's own ttyd is listening on the port. If the port is taken by another program or user, you get an error instead of a URL.
 
+## attach
+
+- `attach <id>` puts your terminal into the tmux session of a running agent. Leave it with `Ctrl-b d`; the agent keeps running.
+- Without an ID it goes to the only running session. With several running, it lists them and stops.
+- Run inside tmux, it switches the tmux client to that session instead of starting one tmux inside another.
+- It does not start anything: for a stopped agent it names the `start` command.
+- It needs a terminal. A program without one, such as an AI assistant running commands, gets an error.
+
+## completion
+
+`completion bash` prints a completion script for bash. Load it from `~/.bashrc` with `eval "$(launch_claude completion bash)"`. It completes commands, options, the values of `--mode`, directories after `--dir`, and IDs. For the IDs it calls `launch_claude completion ids running|stopped|registered`, which prints one ID per line. Only bash is supported.
+
 ## stop / forget
 
 - `stop <id>...` stops tmux and ttyd for those agents. `stop` alone stops everything this tool started, including `--once` sessions. Registrations are kept.

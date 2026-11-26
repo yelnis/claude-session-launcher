@@ -75,7 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/yelnis/claude-session-launcher/main
 ```bash
 cd ~/projects/site
 launch_claude open web            # new conversation in tmux, registered as "web"
-tmux attach -t web                # the terminal (detach with Ctrl-b d); or use it from claude.ai
+launch_claude attach web          # the terminal (leave with Ctrl-b d); or use it from claude.ai
 launch_claude list                # what is registered and what is running
 launch_claude stop web            # stop it; the registration stays
 launch_claude start web           # start it again with the saved settings
@@ -110,7 +110,7 @@ A free port from 7700-7799 is chosen and saved, so the URL stays the same. The t
 - Log in once before the first start (`claude auth login`). The tool cannot do this for you.
 - The work directory is marked as trusted for Claude Code, so the trust dialog does not stop the start.
 - A start waits up to 60 seconds for the Claude Code prompt, then types `/remote-control <id>`. Claude Code then shows a dialog (Disconnect / Show QR code / Continue); the tool closes it when `Continue` is selected. If it stays open, attach with `tmux attach -t <id>` and choose `Continue`.
-- If a start fails, the message shows the last lines of the screen. `tmux attach -t <id>` shows the rest.
+- If a start fails, the message shows the last lines of the screen. `launch_claude attach <id>` shows the rest.
 - A claude.ai login lasted about 3-4 weeks for the author. After that Remote Control disconnects until you log in again.
 
 ## Commands
@@ -126,6 +126,8 @@ launch_claude start --autostart        start every agent with autostart=1
 launch_claude <id>                     shortcut for: start <id>
 launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
                                        (the session you run it in is kept unless --stop-own-session)
+launch_claude attach [<id>]            go to the tmux session of a running agent (leave: Ctrl-b d);
+                                       no id = the only one running
 launch_claude list [--running|--autostart]
 launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent until --off or stop
                                        (saved settings unchanged)
@@ -133,11 +135,22 @@ launch_claude ttyd <id> --off          close it again; the agent keeps running
 launch_claude add <id> [options]       register only (does not start)
 launch_claude set <id> [options]       change saved settings
 launch_claude forget <id>              remove the registration
+launch_claude completion bash          print a bash completion script
 ```
 
-IDs match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. These words are reserved and cannot be IDs: `all`, `start`, `stop`, `open`, `add`, `set`, `forget`, `list`, `ttyd`, `help`.
+IDs match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. These words are reserved and cannot be IDs: `all`, `start`, `stop`, `open`, `attach`, `add`, `set`, `forget`, `list`, `ttyd`, `completion`, `help`.
 
 The ID becomes three names: the tmux session, the Claude Code conversation and the Remote Control session. Claude Code shows that name in claude.ai, and other Claude Code sessions use it to send a message to this one. The tool prevents duplicate IDs on one machine only, so if you use several machines, choose IDs that differ between them.
+
+### Completion in bash
+
+Add this line to `~/.bashrc`:
+
+```bash
+eval "$(launch_claude completion bash)"
+```
+
+Tab then completes the commands, their options and the IDs that fit: running agents after `attach`, `stop` and `ttyd`, stopped ones after `start` and `open`, all registered ones after `set` and `forget`. For a shorter command, add `alias lc=launch_claude` and `complete -F _launch_claude lc` below that line.
 
 ### Options
 

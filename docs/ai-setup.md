@@ -47,6 +47,7 @@ When a ttyd is started without a password on an interface other than loopback, `
 | `ttyd = 0/1` (setting), `--with-ttyd` / `--without-ttyd` | Whether `start` and `open` serve the agent with ttyd every time |
 | `stop <id>` | Stops tmux and ttyd. The registration, the port and the conversation stay |
 | `forget <id>` | Deletes the registration. Conversations of Claude Code are not deleted |
+| `attach <id>` | For the user: puts their terminal into the session. It needs a terminal, so it fails when you run it. To read a session's screen yourself: `tmux capture-pane -p -t <id>` |
 
 ## 4. Ask the user before you set anything up
 
@@ -75,7 +76,7 @@ launch_claude add writer --dir ~/docs --mode continue --autostart
 launch_claude add coder  --dir ~/src  --mode continue --autostart
 launch_claude list --autostart       # both listed, AUTO column "*"
 launch_claude start writer coder     # start now; prints "ready" for each
-tmux attach -t writer                # the terminal (detach: Ctrl-b d)
+launch_claude attach writer          # for the user, in a terminal (leave: Ctrl-b d)
 ```
 
 `open --autostart writer ~/docs` followed by `set writer --mode continue` gives the same registration, but starts at once with a new conversation.

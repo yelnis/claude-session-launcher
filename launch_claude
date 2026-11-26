@@ -75,6 +75,8 @@ Usage:
   launch_claude <id>                     shortcut for: start <id>
   launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
                                          (the session you run it in is kept unless --stop-own-session)
+  launch_claude attach [<id>]            go to the tmux session of a running agent (leave: Ctrl-b d);
+                                         no id = the only one running
   launch_claude list [--running|--autostart]
   launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent until --off or stop
                                          (saved settings unchanged)
@@ -82,6 +84,8 @@ Usage:
   launch_claude add <id> [options]       register only (does not start)
   launch_claude set <id> [options]       change saved settings
   launch_claude forget <id>              remove the registration
+  launch_claude completion bash          print a bash completion script (commands, IDs, options);
+                                         in ~/.bashrc: eval "$(launch_claude completion bash)"
   launch_claude help | -h | --help       show this help
   launch_claude --version                show the version
 
@@ -514,6 +518,25 @@ def current_session():
         args += ["-t", os.environ["TMUX_PANE"]]
     result = tmux(*(args + ["#{session_name}"]))
     return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def running_ids(sessions=None):
+    """IDs with a running tmux session: what this tool started, and registered IDs that exist."""
+    sessions = managed_sessions() if sessions is None else sessions
+    return sorted(set(sessions) | set(i for i in registered_ids() if session_exists(i)))
+
+
+def attach_session(name):
+    """Put the user's terminal into the session. Outside tmux this replaces our process."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise Error("attach needs a terminal. Run it yourself in a terminal: %s attach %s" % (PROG, name))
+    if os.environ.get("TMUX"):
+        # Inside tmux: switch the client instead of nesting one tmux in another.
+        result = tmux("switch-client", "-t", "=" + name)
+        if result.returncode != 0:
+            raise Error("[%s] tmux could not switch to the session: %s" % (name, result.stderr.strip()))
+        return 0
+    os.execvp("tmux", ["tmux", "attach-session", "-t", "=" + name])
 
 
 def capture_pane(target):
@@ -1200,7 +1223,7 @@ def cmd_stop(argv):
             raise Error("[%s] is the session this command runs in; nothing was stopped. Stop it from "
                         "another terminal, or add --stop-own-session." % me)
     else:
-        targets = sorted(set(sessions) | set(i for i in registered_ids() if session_exists(i)))
+        targets = running_ids(sessions)
         if me in targets and not args.own:
             targets.remove(me)
             info("[%s] is the session this command runs in; not stopped (--stop-own-session stops it too)."
@@ -1216,6 +1239,29 @@ def cmd_stop(argv):
         else:
             info("[%s] is not running." % agent_id)
     return 0
+
+
+def cmd_attach(argv):
+    parser = make_parser("attach")
+    parser.add_argument("id", nargs="?")
+    args = parser.parse_args(argv)
+    require("tmux")
+    running = running_ids()
+    agent_id = args.id
+    if agent_id is None:
+        if not running:
+            raise Error("attach: nothing is running. Start an agent with: %s start <id>" % PROG)
+        if len(running) > 1:
+            raise Error("attach: which one? Running: %s" % ", ".join(running))
+        agent_id = running[0]
+    elif agent_id not in running:
+        if load_agent(agent_id) is not None:
+            raise Error("[%s] is not running. Start it with: %s start %s" % (agent_id, PROG, agent_id))
+        raise Error("'%s' is neither registered nor a running session of %s" % (agent_id, PROG))
+    if agent_id == current_session():
+        info("[%s] is the session you are in." % agent_id)
+        return 0
+    return attach_session(agent_id)
 
 
 def cmd_ttyd(argv):
@@ -1349,9 +1395,100 @@ def cmd_list(argv):
     return 0
 
 
+# What the shell completion offers after each command: its options, and which IDs.
+# IDs: "running", "stopped" (registered and not running), "registered", or None.
+ADD_SET_OPTIONS = ("--dir", "--port", "--with-ttyd", "--without-ttyd", "--mode", "--autostart",
+                   "--no-autostart", "--claude-config-dir")
+COMPLETION = {
+    "open": (("--resume", "--continue", "--once", "--with-ttyd", "--without-ttyd", "--port", "--dir",
+              "--claude-config-dir", "--autostart"), "stopped"),
+    "start": (("--autostart",), "stopped"),
+    "stop": (("--stop-own-session",), "running"),
+    "attach": ((), "running"),
+    "list": (("--running", "--autostart"), None),
+    "ttyd": (("--port", "--off"), "running"),
+    "add": (ADD_SET_OPTIONS, None),
+    "set": (ADD_SET_OPTIONS, "registered"),
+    "forget": ((), "registered"),
+    "completion": ((), None),
+}
+
+BASH_COMPLETION = """\
+# bash completion for launch_claude. Load it with:  eval "$(launch_claude completion bash)"
+_launch_claude() {
+    local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD-1]} cmd=${COMP_WORDS[1]}
+    local options= ids= dirs=
+    COMPREPLY=()
+    case $prev in
+        --mode) COMPREPLY=($(compgen -W "%(modes)s" -- "$cur")); return ;;
+        --dir|--claude-config-dir) dirs=1 ;;
+        --port) return ;;
+    esac
+    if [ -z "$dirs" ]; then
+        if [ "$COMP_CWORD" -eq 1 ]; then
+            # the first word: a command, or the ID of a stopped agent (shortcut for start)
+            options="%(commands)s help --version"; ids=stopped
+        else
+            case $cmd in
+%(cases)s
+                completion) options="bash" ;;
+                -*|help) return ;;
+                *) ids=stopped ;;
+            esac
+        fi
+        case $cur in
+            -*) ids= ;;
+            *) [ "$COMP_CWORD" -eq 1 ] || [ "$cmd" = completion ] || options= ;;
+        esac
+        # open <id> [dir]: directories for the second word, or once a path is being typed
+        if [ "$cmd" = open ] && [ "$COMP_CWORD" -gt 1 ] && [ "${cur#-}" = "$cur" ]; then
+            case $cur in [/~.]*) dirs=1 ;; *) [ "$COMP_CWORD" -gt 2 ] && dirs=1 ;; esac
+        fi
+        [ -n "$ids" ] && options="$options $(launch_claude completion ids "$ids" 2>/dev/null)"
+        COMPREPLY=($(compgen -W "$options" -- "$cur"))
+    fi
+    if [ -n "$dirs" ]; then
+        compopt -o filenames 2>/dev/null
+        local IFS=$'\\n'  # one directory per line: names may contain spaces
+        COMPREPLY+=($(compgen -d -- "$cur"))
+    fi
+}
+complete -F _launch_claude launch_claude
+"""
+
+
+def completion_ids(kind):
+    """IDs for the completion script, one per line; never an error, never a warning."""
+    try:
+        running = running_ids()
+        if kind == "running":
+            return running
+        if kind == "stopped":
+            return [i for i in registered_ids() if i not in running]
+        return registered_ids()
+    except (Error, OSError):
+        return []
+
+
+def cmd_completion(argv):
+    if argv == ["bash"]:
+        cases = "\n".join('                %s) options="%s"; ids=%s ;;' % (name, " ".join(options), ids or "")
+                          for name, (options, ids) in COMPLETION.items() if name != "completion")
+        sys.stdout.write(BASH_COMPLETION % {"modes": " ".join(MODES), "commands": " ".join(COMMANDS),
+                                            "cases": cases})
+        return 0
+    if len(argv) == 2 and argv[0] == "ids" and argv[1] in ("running", "stopped", "registered"):
+        for agent_id in completion_ids(argv[1]):
+            print(agent_id)
+        return 0
+    raise Error("completion: only bash is supported. Add this line to ~/.bashrc:\n"
+                '  eval "$(%s completion bash)"' % PROG)
+
+
 # The one list of commands: main() dispatches on it, and the names cannot be used as IDs.
-COMMANDS = {"start": cmd_start, "stop": cmd_stop, "open": cmd_open, "add": cmd_add, "set": cmd_set,
-            "forget": cmd_forget, "list": cmd_list, "ttyd": cmd_ttyd}
+COMMANDS = {"start": cmd_start, "stop": cmd_stop, "open": cmd_open, "attach": cmd_attach, "add": cmd_add,
+            "set": cmd_set, "forget": cmd_forget, "list": cmd_list, "ttyd": cmd_ttyd,
+            "completion": cmd_completion}
 RESERVED = ("all",) + tuple(COMMANDS) + ("help",)
 
 
