@@ -122,9 +122,14 @@ def test_once_is_listed_stopped_and_cleans_up_after_exit(sandbox):
     sandbox.tmux("send-keys", "-t", "=tmp1:", "/exit", "Enter")
     assert sandbox.wait(lambda: "tmp1" not in sandbox.sessions())
 
-    # stop without arguments also finds the unregistered --once session
+    # stop --all also finds the unregistered --once session; an unrelated tmux session stays
     assert "tmp2" in sandbox.sessions()
-    assert sandbox.run("stop").returncode == 0
+    sandbox.tmux("new-session", "-d", "-s", "mine")
+    refused = sandbox.run("stop")
+    assert refused.returncode == 1 and "--all" in refused.stderr and "tmp2" in sandbox.sessions()
+    assert sandbox.run("stop", "--all").returncode == 0
+    assert sandbox.sessions() == ["mine"]
+    sandbox.tmux("kill-session", "-t", "=mine")
     assert sandbox.sessions() == []
 
 
@@ -137,12 +142,12 @@ def test_stop_keeps_the_session_it_is_run_in(sandbox):
     assert named.returncode == 1 and "--stop-own-session" in named.stderr
     assert sorted(sandbox.sessions()) == ["alpha", "beta"]
 
-    everything = sandbox.run("stop", **inside)
+    everything = sandbox.run("stop", "--all", **inside)
     assert everything.returncode == 0
     assert "[alpha] is the session this command runs in; not stopped" in everything.stdout
     assert sandbox.sessions() == ["alpha"]
 
-    assert sandbox.run("stop", "--stop-own-session", **inside).returncode == 0
+    assert sandbox.run("stop", "--all", "--stop-own-session", **inside).returncode == 0
     assert sandbox.sessions() == []
 
 
@@ -219,7 +224,9 @@ try launch_claude b
 try launch_claude set ""
 try launch_claude set beta --mo
 try launch_claude set beta --mode re
-try launch_claude stop -
+try launch_claude stop --s
+try launch_claude a ""
+try launch_claude d
 try launch_claude add new --dir su
 try launch_claude open gamma s
 try launch_claude list ""
@@ -238,6 +245,8 @@ try launch_claude list ""
         "--mode",
         "resume",
         "--stop-own-session",
+        "alpha",             # the short name "a" completes like attach
+        "down",              # short names of more than one letter are offered
         "sub dir",           # --dir: directories
         "sub dir",           # open <id> <dir>
         "",                  # list takes no id

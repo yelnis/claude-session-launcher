@@ -124,8 +124,9 @@ launch_claude open [options] [<id>] [dir]   open a new or registered agent; regi
 launch_claude start <id>...            start registered agents
 launch_claude start --autostart        start every agent with autostart=1
 launch_claude <id>                     shortcut for: start <id>
-launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
-                                       (the session you run it in is kept unless --stop-own-session)
+launch_claude stop <id>... | --all     stop agents, keep registrations; --all = everything this tool
+                                       started (the session you run it in is kept unless
+                                       --stop-own-session)
 launch_claude attach [<id>]            go to the tmux session of a running agent (leave: Ctrl-b d);
                                        no id = the only one running
 launch_claude list [--running|--autostart]
@@ -138,7 +139,11 @@ launch_claude forget <id>              remove the registration
 launch_claude completion bash          print a bash completion script
 ```
 
-IDs match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. These words are reserved and cannot be IDs: `all`, `start`, `stop`, `open`, `attach`, `add`, `set`, `forget`, `list`, `ttyd`, `completion`, `help`.
+Short names: `up` = `start`, `down` = `stop`, `o` = `open`, `a` = `attach`.
+
+The commands come in pairs: `start` and `stop` act on a registered agent, `add` and `forget` on the registration. `open` is a shortcut: it does `add` if the ID is new, then starts the agent with a new conversation. `stop` never touches a tmux session that this tool did not start.
+
+IDs match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. These words are reserved and cannot be IDs: `all`, `start`, `stop`, `open`, `attach`, `add`, `set`, `forget`, `list`, `ttyd`, `completion`, `up`, `down`, `o`, `a`, `help`.
 
 The ID becomes three names: the tmux session, the Claude Code conversation and the Remote Control session. Claude Code shows that name in claude.ai, and other Claude Code sessions use it to send a message to this one. The tool prevents duplicate IDs on one machine only, so if you use several machines, choose IDs that differ between them.
 

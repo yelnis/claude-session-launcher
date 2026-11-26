@@ -73,8 +73,9 @@ Usage:
   launch_claude start <id>...            start registered agents
   launch_claude start --autostart        start every agent with autostart=1 (use this from cron @reboot)
   launch_claude <id>                     shortcut for: start <id>
-  launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
-                                         (the session you run it in is kept unless --stop-own-session)
+  launch_claude stop <id>... | --all     stop agents, keep registrations; --all = everything this tool
+                                         started (the session you run it in is kept unless
+                                         --stop-own-session)
   launch_claude attach [<id>]            go to the tmux session of a running agent (leave: Ctrl-b d);
                                          no id = the only one running
   launch_claude list [--running|--autostart]
@@ -88,6 +89,10 @@ Usage:
                                          in ~/.bashrc: eval "$(launch_claude completion bash)"
   launch_claude help | -h | --help       show this help
   launch_claude --version                show the version
+
+Short names:  up = start   down = stop   o = open   a = attach
+Pairs:        start/stop (a registered agent), add/forget (the registration).
+              open = add if the ID is new, then start with a new conversation.
 
 open options:
   --resume           resume the last conversation of this agent (this launch only)
@@ -521,9 +526,12 @@ def current_session():
 
 
 def running_ids(sessions=None):
-    """IDs with a running tmux session: what this tool started, and registered IDs that exist."""
+    """IDs with a running tmux session that this tool started (they carry its mark).
+
+    A tmux session that merely has the name of a registered ID is somebody else's.
+    """
     sessions = managed_sessions() if sessions is None else sessions
-    return sorted(set(sessions) | set(i for i in registered_ids() if session_exists(i)))
+    return sorted(sessions)
 
 
 def attach_session(name):
@@ -1209,9 +1217,12 @@ def cmd_stop(argv):
     parser = make_parser("stop")
     parser.add_argument("ids", nargs="*")
     parser.add_argument("--stop-own-session", dest="own", action="store_true")
+    parser.add_argument("--all", dest="everything", action="store_true")
     args = parser.parse_args(argv)
     sessions = managed_sessions()
     me = current_session()
+    if args.ids and args.everything:
+        raise Error("stop: give IDs or --all, not both")
     if args.ids:
         targets = []
         for agent_id in args.ids:
@@ -1224,8 +1235,13 @@ def cmd_stop(argv):
                         "another terminal, or add --stop-own-session." % me)
     else:
         targets = running_ids(sessions)
-        if me in targets and not args.own:
+        kept = me in targets and not args.own
+        if kept:
             targets.remove(me)
+        if targets and not args.everything:
+            raise Error("stop: name the IDs to stop, or add --all to stop everything that is running: %s"
+                        % ", ".join(targets))
+        if kept:
             info("[%s] is the session this command runs in; not stopped (--stop-own-session stops it too)."
                  % me)
         if not targets:
@@ -1234,8 +1250,13 @@ def cmd_stop(argv):
     # If we are inside one of the targets, stop it last so the others are not left behind.
     targets.sort(key=lambda name: name == me)
     for agent_id in targets:
-        if agent_id in sessions or session_exists(agent_id) or session_exists(ttyd_session(agent_id)):
+        if agent_id in sessions:
             stop_session(agent_id)
+        elif session_exists(agent_id):
+            warn("[%s] a tmux session of this name exists, but %s did not start it; not stopped."
+                 % (agent_id, PROG))
+        elif session_exists(ttyd_session(agent_id)):
+            stop_session(agent_id)  # only its ttyd is left
         else:
             info("[%s] is not running." % agent_id)
     return 0
@@ -1403,7 +1424,7 @@ COMPLETION = {
     "open": (("--resume", "--continue", "--once", "--with-ttyd", "--without-ttyd", "--port", "--dir",
               "--claude-config-dir", "--autostart"), "stopped"),
     "start": (("--autostart",), "stopped"),
-    "stop": (("--stop-own-session",), "running"),
+    "stop": (("--all", "--stop-own-session"), "running"),
     "attach": ((), "running"),
     "list": (("--running", "--autostart"), None),
     "ttyd": (("--port", "--off"), "running"),
@@ -1427,8 +1448,11 @@ _launch_claude() {
     if [ -z "$dirs" ]; then
         if [ "$COMP_CWORD" -eq 1 ]; then
             # the first word: a command, or the ID of a stopped agent (shortcut for start)
-            options="%(commands)s help --version"; ids=stopped
+            options="%(commands)s %(aliases)s help --version"; ids=stopped
         else
+            case $cmd in
+%(alias_cases)s
+            esac
             case $cmd in
 %(cases)s
                 completion) options="bash" ;;
@@ -1474,8 +1498,10 @@ def cmd_completion(argv):
     if argv == ["bash"]:
         cases = "\n".join('                %s) options="%s"; ids=%s ;;' % (name, " ".join(options), ids or "")
                           for name, (options, ids) in COMPLETION.items() if name != "completion")
-        sys.stdout.write(BASH_COMPLETION % {"modes": " ".join(MODES), "commands": " ".join(COMMANDS),
-                                            "cases": cases})
+        alias_cases = "\n".join("                %s) cmd=%s ;;" % pair for pair in ALIASES.items())
+        sys.stdout.write(BASH_COMPLETION % {
+            "modes": " ".join(MODES), "commands": " ".join(COMMANDS), "cases": cases,
+            "aliases": " ".join(a for a in ALIASES if len(a) > 1), "alias_cases": alias_cases})
         return 0
     if len(argv) == 2 and argv[0] == "ids" and argv[1] in ("running", "stopped", "registered"):
         for agent_id in completion_ids(argv[1]):
@@ -1489,7 +1515,9 @@ def cmd_completion(argv):
 COMMANDS = {"start": cmd_start, "stop": cmd_stop, "open": cmd_open, "attach": cmd_attach, "add": cmd_add,
             "set": cmd_set, "forget": cmd_forget, "list": cmd_list, "ttyd": cmd_ttyd,
             "completion": cmd_completion}
-RESERVED = ("all",) + tuple(COMMANDS) + ("help",)
+# Short names. They are reserved words too.
+ALIASES = {"up": "start", "down": "stop", "o": "open", "a": "attach"}
+RESERVED = ("all",) + tuple(COMMANDS) + tuple(ALIASES) + ("help",)
 
 
 def main(argv=None):
@@ -1508,6 +1536,7 @@ def main(argv=None):
         if any(arg in ("-h", "--help") for arg in rest):
             sys.stdout.write(USAGE)
             return 0
+        first = ALIASES.get(first, first)
         if first in COMMANDS:  # commands win over IDs of the same name
             return COMMANDS[first](rest)
         if first.startswith("-") or not ID_RE.match(first):

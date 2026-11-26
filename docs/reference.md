@@ -84,8 +84,9 @@ A ttyd is only reported as open when this tool's own ttyd is listening on the po
 
 ## stop / forget
 
-- `stop <id>...` stops tmux and ttyd for those agents. `stop` alone stops everything this tool started, including `--once` sessions. Registrations are kept.
-- The session that `stop` is run in is not stopped, so that a command typed in a session (by you or by Claude Code) does not end that session by accident. `stop` alone stops the others and says which one it kept; `stop <id>` with the ID of that session is an error and stops nothing. To stop it as well, run the command from another terminal or add `--stop-own-session`. The session is recognised by the `TMUX` and `TMUX_PANE` variables that tmux sets.
+- `stop <id>...` stops tmux and ttyd for those agents. `stop --all` stops everything this tool started, including `--once` sessions. Registrations are kept. `stop` alone stops nothing: it lists what is running and asks for IDs or `--all`. `down` is a short name for `stop`.
+- Only sessions that this tool started are stopped. It marks them with the tmux option `@launch_claude`. Your other tmux sessions are not touched, also not one that happens to have the name of a registered ID: naming it gives a warning.
+- The session that `stop` is run in is not stopped, so that a command typed in a session (by you or by Claude Code) does not end that session by accident. `stop --all` stops the others and says which one it kept; `stop <id>` with the ID of that session is an error and stops nothing. To stop it as well, run the command from another terminal or add `--stop-own-session`. The session is recognised by the `TMUX` and `TMUX_PANE` variables that tmux sets.
 - `forget <id>` deletes the registration and its state. Stop the agent first.
 
 ## list

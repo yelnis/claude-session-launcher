@@ -15,8 +15,8 @@ tmux display-message -p '#{session_name}'   # the session you are in (fails or p
 launch_claude list --running                # what is running
 ```
 
-- `launch_claude stop` does not stop the session it is run in: without an ID it stops all the others and says which one it kept, and with the ID of your own session it fails. Do not add `--stop-own-session` to get past this. If the user wants your session stopped or restarted, ask them to do it from another terminal.
-- `stop` without an ID still stops every other session, and other assistants may be working in them. Name the IDs you mean.
+- `launch_claude stop` does not stop the session it is run in: `stop --all` stops all the others and says which one it kept, and with the ID of your own session it fails. Do not add `--stop-own-session` to get past this. If the user wants your session stopped or restarted, ask them to do it from another terminal.
+- `stop` without an ID stops nothing and lists what is running. `stop --all` stops every other session, and other assistants or other accounts of the user may be working in them. Name the IDs you mean; use `--all` only when the user asked for everything to be stopped.
 - Updating the program file (the `curl` command in the README) is safe while sessions run. Do not stop anything for an update.
 
 ## 2. What happens if you specify nothing

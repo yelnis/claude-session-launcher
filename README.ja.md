@@ -124,7 +124,7 @@ launch_claude open [options] [<id>] [dir]   新規または登録済みを開く
 launch_claude start <id>...            登録済みの ID を起動
 launch_claude start --autostart        autostart=1 の全員を起動
 launch_claude <id>                     ショートカット(= start <id>)
-launch_claude stop [<id>...]           停止。登録は残す。引数なしは、起動中の全員
+launch_claude stop <id>... | --all     停止。登録は残す。--all は、このツールが起動した全員
                                        (実行したセッション自身は残す。止めるには --stop-own-session)
 launch_claude attach [<id>]            起動中のエージェントの tmux セッションに入る(離れるには Ctrl-b d)
                                        ID なしは、起動中が1つだけのとき
@@ -138,7 +138,11 @@ launch_claude forget <id>              登録を削除
 launch_claude completion bash          bash の補完スクリプトを出力
 ```
 
-ID の形式は `^[A-Za-z0-9][A-Za-z0-9_-]*$` です。次の語は予約されていて、ID には使えません: `all`、`start`、`stop`、`open`、`attach`、`add`、`set`、`forget`、`list`、`ttyd`、`completion`、`help`。
+短い名前: `up` = `start`、`down` = `stop`、`o` = `open`、`a` = `attach`。
+
+コマンドは対になっています。`start` と `stop` は登録済みのエージェントを、`add` と `forget` は登録を扱います。`open` は近道で、ID が新しければ `add` をしてから、新しい会話でエージェントを起動します。`stop` は、このツールが起動していない tmux セッションには触れません。
+
+ID の形式は `^[A-Za-z0-9][A-Za-z0-9_-]*$` です。次の語は予約されていて、ID には使えません: `all`、`start`、`stop`、`open`、`attach`、`add`、`set`、`forget`、`list`、`ttyd`、`completion`、`up`、`down`、`o`、`a`、`help`。
 
 ID は、tmux のセッション、Claude Code の会話、Remote Control のセッションの3つの名前になります。Claude Code はこの名前を claude.ai に表示し、ほかの Claude Code のセッションは、この名前を宛先にしてメッセージを送ります。ID の重複を防ぐのは1台のマシンの中だけなので、複数のマシンで使うときは、マシンの間で重ならない ID を付けてください。
 
