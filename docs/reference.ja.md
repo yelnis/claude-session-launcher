@@ -130,4 +130,4 @@ launch_claude set myproj --autostart    # 登録済みのものを変える場�
 - `/remote-control` を送ると、Claude Code が確認のダイアログ(Disconnect / Show QR code / Continue)を開きます。このツールは、`Continue` が選ばれているときだけ Enter を送って閉じます。もしダイアログが残っていたら、`tmux attach -t <id>` で入って、`Continue` を選んでください。
 - 画面に `? for shortcuts` か `shift+tab to cycle` が出たら、入力待ちになったと判定します(最大60秒)。待ちに失敗したときは、警告に画面の末尾10行が含まれます。この文言が、使っている Claude Code の画面と合っているかを確認してください。
 - 起動コマンドは、tmux の既定のシェルに文字として送ります。`VAR=value command` と `||` を使うので、POSIX 系のシェル(bash、zsh、sh など)を想定しています。
-- cron から起動した場合、tmux は既定のシェルを cron の `SHELL`(ふつう `/bin/sh`)から決め、ログインシェルとして動かします。このシェルは、`~/.bashrc` ではなく `~/.profile` を読みます。`claude` は、その結果の `PATH` で見つかる必要があります。`tmux` と `ttyd` はツール自身が起動するので、cron の `PATH` にある必要があります。見つからないときは、エラーにそう表示されます。
+- cron から起動した場合、tmux は既定のシェルを cron の `SHELL`(ふつう `/bin/sh`)から決め、ログインシェルとして動かします。このシェルは、`~/.bashrc` ではなく `~/.profile` を読みます。`claude` は、その結果の `PATH` で見つかる必要があります(cron の `PATH` をシェルが引き継ぎ、そこに `~/.profile` が足した分が加わります)。`claude` のあるディレクトリを足す `~/.profile` がないシステム(RHEL は `PATH` を `~/.bashrc` に書きます)では、そのディレクトリを crontab の `PATH=...` の行に入れます。`tmux` と `ttyd` はツール自身が起動するので、cron の `PATH` にある必要があります。見つからないときは、エラーにそう表示されます。

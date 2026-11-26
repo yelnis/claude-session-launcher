@@ -93,7 +93,7 @@ Cron does not use your interactive shell, so:
 - Write the full path of `launch_claude` as shown.
 - `tmux` (and `ttyd`) must be found on cron's short `PATH`, usually `/usr/bin:/bin`. If they are elsewhere, put a `PATH=...` line above the `@reboot` line.
 - Environment variables from your shell profile (`TTYD_CREDENTIAL`, `REMOTE_CONTROL`, `CLAUDE_CONFIG_DIR`) are not set. Put such values into the [settings file](#settings) instead.
-- `claude` itself is typed into the shell that tmux starts. Under cron that is `/bin/sh` as a login shell, which reads `~/.profile` and not `~/.bashrc`, so `claude` must be found from there.
+- `claude` itself is typed into the shell that tmux starts. Under cron that is `/bin/sh` as a login shell, which reads `~/.profile` and not `~/.bashrc`. Where `~/.profile` puts the directory of `claude` into `PATH` (Ubuntu does this for `~/.local/bin`), nothing more is needed. Where it does not, or the file does not exist (RHEL keeps `PATH` in `~/.bashrc`), add a `PATH=...` line that contains that directory above the `@reboot` line; the shell inherits it.
 
 ### A terminal in the browser
 

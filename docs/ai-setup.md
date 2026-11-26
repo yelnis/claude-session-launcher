@@ -119,7 +119,7 @@ This goes into the user's own crontab (`crontab -e`), not `/etc/crontab`.
 
 - Cron does not read the shell profile. `TTYD_CREDENTIAL`, `REMOTE_CONTROL` and `CLAUDE_CONFIG_DIR` set there do not exist at boot. Put the values into the `config` file (`ttyd_credential`, `remote_control`, `claude_config_dir`). A password that exists only in the shell profile means **no password after a reboot**.
 - Cron's `PATH` is short, typically `/usr/bin:/bin`. `tmux` and `ttyd` must be found there: check with `env -i PATH=/usr/bin:/bin sh -c 'command -v tmux ttyd'`. If they live elsewhere, add a `PATH=...` line above the `@reboot` line.
-- `claude` is not started by cron directly: its command line is typed into the shell that tmux opens. Under cron that shell is `/bin/sh` as a login shell, which reads `~/.profile` and not `~/.bashrc`. Check with `env -i HOME="$HOME" PATH=/usr/bin:/bin sh -lc 'command -v claude'`.
+- `claude` is not started by cron directly: its command line is typed into the shell that tmux opens. Under cron that shell is `/bin/sh` as a login shell, which reads `~/.profile` and not `~/.bashrc`. Check with `env -i HOME="$HOME" PATH=/usr/bin:/bin sh -lc 'command -v claude'`. If this prints nothing (usual on RHEL, where `PATH` is set in `~/.bashrc` and there is no `~/.profile`), add a `PATH=...` line with the directory of `claude` above the `@reboot` line: the shell inherits cron's `PATH`. Do not edit the user's shell files for this.
 - You cannot fully test this without a reboot. Say so to the user instead of claiming that it works. After the reboot, `launch_claude list` shows the result.
 
 ## 7. The first start, and when a start does not finish
