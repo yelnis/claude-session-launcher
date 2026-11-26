@@ -182,6 +182,19 @@ None of the tests starts the real Claude Code, and none touches your own setting
 | `test_unknown_keys_are_reported` | A misspelled key in `config` or an agent file is reported, with the file name |
 | `test_saved_files_contain_only_known_keys` | Files written by the tool give no such warning |
 
+### Failures that are hard to reach
+
+| Test | Checks |
+|---|---|
+| `test_start_goes_on_after_a_broken_agent` | When one agent raises an error, `start --autostart` reports it, starts the others and exits with status 1 |
+| `test_wait_for_ready_answers_the_trust_dialog` | A trust question on the screen is answered with Enter, and the wait goes on until the prompt appears |
+| `test_wait_for_ready_gives_up_when_the_screen_stops_changing` | A screen that stays the same (for example a login screen) ends the wait early, with that screen returned |
+| `test_wait_for_ready_notices_that_claude_exited` | When the shell is in the foreground again, the wait ends with "claude exited" |
+| `test_wait_for_ready_times_out` | The wait ends with "timed out" when the time is over |
+| `test_interface_ip_of_the_loopback_interface` | The address of `lo` is found on the real system; an unknown interface gives none |
+| `test_failed_write_leaves_no_temporary_file` | When a settings file cannot be replaced, the error is passed on and no temporary file is left |
+| `test_pretrust_failure_leaves_no_temporary_file` | When `.claude.json` cannot be replaced, marking a directory as trusted reports failure and leaves no temporary file |
+
 ## test_integration.py
 
 Skipped when `tmux` is not installed; the ttyd tests also when `ttyd` is not installed.

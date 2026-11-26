@@ -849,3 +849,84 @@ def test_saved_files_contain_only_known_keys(lc, workdir, tmp_path, capsys):
     assert set(lc.read_ini(agent_file(lc, "a"), "agent")) <= set(lc.AGENT_KEYS)
     lc.main(["list"])
     assert capsys.readouterr().err == ""
+
+
+# ---- failures that are hard to reach ------------------------------------
+
+def test_start_goes_on_after_a_broken_agent(lc, workdir, monkeypatch, capsys):
+    for name in ("a", "b", "c"):
+        lc.main(["add", name, "--autostart"])
+    real = lc.start_registered
+
+    def broken_b(settings, agent_id, mode=None):
+        if agent_id == "b":
+            raise lc.Error("[b] cannot start")
+        return real(settings, agent_id, mode)
+
+    monkeypatch.setattr(lc, "start_registered", broken_b)
+    assert lc.main(["start", "--autostart"]) == 1
+    assert [entry[0] for entry in lc.fake.launched] == ["a", "c"]
+    assert "Error: [b] cannot start" in capsys.readouterr().err
+
+
+def watch_screens(lc, monkeypatch, screens, commands=("claude",)):
+    """Let wait_for_ready see these screens and foreground commands, one per poll; no real waiting."""
+    sent = []
+    screens, commands = list(screens), list(commands)
+    def following(items):
+        return lambda target: items.pop(0) if len(items) > 1 else items[0]
+
+    monkeypatch.setattr(lc, "capture_pane", following(screens))
+    monkeypatch.setattr(lc, "pane_command", following(commands))
+    monkeypatch.setattr(lc, "tmux", lambda *args: sent.append(args))
+    monkeypatch.setattr(lc.time, "sleep", lambda seconds: None)
+    return sent
+
+
+def test_wait_for_ready_answers_the_trust_dialog(lc, monkeypatch):
+    sent = watch_screens(lc, monkeypatch, ["Do you trust this folder?", "> \n? for shortcuts"])
+    assert lc.wait_for_ready("=a:")[:2] == (True, "")
+    assert sent == [("send-keys", "-t", "=a:", "Enter")]
+
+
+def test_wait_for_ready_gives_up_when_the_screen_stops_changing(lc, monkeypatch):
+    watch_screens(lc, monkeypatch, ["Select login method:"])
+    monkeypatch.setattr(lc, "STALL_TIMEOUT", 0)
+    ready, reason, screen = lc.wait_for_ready("=a:")
+    assert (ready, reason) == (False, "the screen has not changed for 0 seconds")
+    assert screen == "Select login method:"
+
+
+def test_wait_for_ready_notices_that_claude_exited(lc, monkeypatch):
+    watch_screens(lc, monkeypatch, ["starting", "claude: command not found"], commands=["claude", "bash"])
+    assert lc.wait_for_ready("=a:")[:2] == (False, "claude exited")
+
+
+def test_wait_for_ready_times_out(lc, monkeypatch):
+    watch_screens(lc, monkeypatch, [""])
+    assert lc.wait_for_ready("=a:", timeout=0)[:2] == (False, "timed out after 0 seconds")
+
+
+def test_interface_ip_of_the_loopback_interface(lc):
+    assert lc.interface_ip("lo") == "127.0.0.1"
+    assert lc.interface_ip("no-such-if0") is None
+
+
+def test_failed_write_leaves_no_temporary_file(lc, tmp_path, monkeypatch):
+    def refuse(source, target):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(lc.os, "replace", refuse)
+    with pytest.raises(OSError):
+        lc.write_ini(tmp_path / "conf" / "a.conf", "agent", {"dir": "/x"})
+    assert list((tmp_path / "conf").iterdir()) == []
+
+
+def test_pretrust_failure_leaves_no_temporary_file(launcher, workdir, tmp_path, monkeypatch):
+    def refuse(source, target):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(launcher.os, "replace", refuse)
+    before = sorted(path.name for path in (tmp_path / "home").iterdir())
+    assert launcher.pretrust_dir(launcher.load_settings(), str(workdir)) is False
+    assert sorted(path.name for path in (tmp_path / "home").iterdir()) == before
