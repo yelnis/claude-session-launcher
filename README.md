@@ -2,18 +2,22 @@ English | [日本語](README.ja.md)
 
 # claude-session-launcher
 
-> **TL;DR** — This script starts several Claude Code sessions at once and makes each of them reachable through `/remote-control`. I wrote it because I wanted my development sessions to come back automatically when Linux reboots (cron `@reboot`). While at it, it also names each session and remembers its work directory and last conversation.
+> **TL;DR** — This script starts several Claude Code sessions at once and makes each of them reachable through `/remote-control`. I wrote it because I wanted my development sessions to come back automatically when Linux reboots (cron `@reboot`). While at it, it also names each session, remembers its work directory, and can return to its previous conversation.
 
-`launch_claude` starts several named [Claude Code](https://code.claude.com/docs) sessions in tmux, optionally serves each one in the browser with [ttyd](https://github.com/tsl0922/ttyd), and sends `/remote-control` once the session is ready.
+> **AI assistants:** before you run any command of this tool for a user, read [`docs/ai-setup.md`](docs/ai-setup.md) (https://raw.githubusercontent.com/yelnis/claude-session-launcher/main/docs/ai-setup.md).
 
-- Give a session an ID (`writer`, `coder`, ...) and it remembers its work directory, port and conversation mode.
-- `open` registers a session automatically; `start` brings registered sessions back.
+`launch_claude` starts several named [Claude Code](https://code.claude.com/docs) sessions in tmux and sends `/remote-control` once each session is ready. If you ask for it, it also serves a session as a terminal in the browser with [ttyd](https://github.com/tsl0922/ttyd).
+
+- Give a session an ID (`writer`, `coder`, ...) and it remembers its work directory and conversation mode.
+- `open` registers a session and starts it; `start` brings registered sessions back.
 - Sessions flagged `autostart` come back after a reboot with one cron line.
-- `open --once` gives you a throwaway session that cleans up after itself.
+- `open --once` gives you a throwaway session: it is not registered, and its tmux session is removed when claude exits.
+
+Words used here: a **session** and an **agent** are the same thing, one Claude Code process in one tmux session, known by its ID. **Remote Control** is the Claude Code feature that lets you use a running session from claude.ai or the mobile app; `/remote-control` is the command that turns it on.
 
 It is a single Python file that uses only the standard library. It is also 100% written by Claude Code (the human wrote the spec and did the complaining).
 
-> **Warning: ttyd has no authentication by default.** Anyone who can reach the port can operate your terminal. See [Security](#security).
+> **Warning: the browser terminal (ttyd) is off unless you ask for it with `--with-ttyd`. When it is on, it has no authentication by default.** Anyone who can reach the port can operate your terminal. See [Security](#security).
 
 ## Contents
 
@@ -38,11 +42,11 @@ Other pages:
 ## Requirements
 
 - `python3` 3.8 or newer (standard library only; nothing to `pip install`). If Python is missing, install it first, e.g. `sudo dnf install python3` or `sudo apt install python3`.
-- `tmux`
-- `ttyd` (not needed if you only use tmux sessions: `--without-ttyd`)
-- Claude Code, logged in with `claude auth login` if you use Remote Control
+- `tmux`, with a POSIX-like shell (bash, zsh, sh, ...) as its default shell
+- `ttyd`, only if you want the browser terminal (`--with-ttyd`)
+- Claude Code, logged in. A session that is not logged in stops at the login screen. Remote Control needs a claude.ai login (`claude auth login`), not an API key
 
-Linux is the target. Nothing depends on the kernel or shell version, so it should work wherever the four items above do. It has been used on:
+Linux is the target. Nothing depends on the kernel version, so it should work wherever the four items above do. It has been used on:
 
 - Ubuntu 24.04 LTS
 - Ubuntu 26.04 LTS (on WSL)
@@ -70,20 +74,44 @@ curl -fsSL https://raw.githubusercontent.com/yelnis/claude-session-launcher/main
 
 ```bash
 cd ~/projects/site
-launch_claude open web            # new conversation, registered as "web", served by ttyd
-launch_claude list                # see the URL
+launch_claude open web            # new conversation in tmux, registered as "web"
+tmux attach -t web                # the terminal (detach with Ctrl-b d); or use it from claude.ai
+launch_claude list                # what is registered and what is running
 launch_claude stop web            # stop it; the registration stays
-launch_claude start web           # start it again with the saved directory and port
-launch_claude set web --autostart --mode continue   # bring it back after a reboot
+launch_claude start web           # start it again with the saved settings
+launch_claude set web --autostart --mode continue   # after a reboot: start it, in its latest conversation
 ```
 
-Then add one line to your crontab (`crontab -e`):
+Then add one line to your own crontab (`crontab -e`):
 
 ```cron
 @reboot $HOME/.local/bin/launch_claude start --autostart
 ```
 
-Cron runs with a minimal `PATH`, so write the full path as shown.
+Cron does not use your interactive shell, so:
+
+- Write the full path of `launch_claude` as shown.
+- `tmux` (and `ttyd`) must be found on cron's short `PATH`, usually `/usr/bin:/bin`. If they are elsewhere, put a `PATH=...` line above the `@reboot` line.
+- Environment variables from your shell profile (`TTYD_CREDENTIAL`, `REMOTE_CONTROL`, `CLAUDE_CONFIG_DIR`) are not set. Put such values into the [settings file](#settings) instead.
+- `claude` itself is typed into the shell that tmux starts. Under cron that is `/bin/sh` as a login shell, which reads `~/.profile` and not `~/.bashrc`, so `claude` must be found from there.
+
+### A terminal in the browser
+
+```bash
+launch_claude open --with-ttyd web      # a new agent: also serve it with ttyd; prints the URL
+launch_claude set web --with-ttyd       # a registered agent: from its next start on
+launch_claude ttyd web                  # a running agent: until "ttyd web --off" or "stop"
+```
+
+A free port from 7700-7799 is chosen and saved, so the URL stays the same. The terminal is plain HTTP, on every network interface, without a password, until you change that: read [Security](#security) first.
+
+### The first start
+
+- Log in once before the first start (`claude auth login`). The tool cannot do this for you.
+- The work directory is marked as trusted for Claude Code, so the trust dialog does not stop the start.
+- A start waits up to 60 seconds for the Claude Code prompt, then types `/remote-control <id>`. Claude Code then shows a dialog (Disconnect / Show QR code / Continue); the tool closes it when `Continue` is selected. If it stays open, attach with `tmux attach -t <id>` and choose `Continue`.
+- If a start fails, the message shows the last lines of the screen. `tmux attach -t <id>` shows the rest.
+- A claude.ai login lasted about 3-4 weeks for the author. After that Remote Control disconnects until you log in again.
 
 ## Commands
 
@@ -92,12 +120,15 @@ launch_claude                          show help and exit with status 1; starts 
 launch_claude help | -h | --help       show help
 launch_claude --version                show the version
 launch_claude open [options] [<id>] [dir]   open a new or registered agent; registers it unless --once
+                                       (tmux only unless --with-ttyd)
 launch_claude start <id>...            start registered agents
 launch_claude start --autostart        start every agent with autostart=1
 launch_claude <id>                     shortcut for: start <id>
 launch_claude stop [<id>...]           stop agents, keep registrations; no id = everything running
+                                       (the session you run it in is kept unless --stop-own-session)
 launch_claude list [--running|--autostart]
-launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent, for now only
+launch_claude ttyd <id> [--port <n>]   open ttyd for a running agent until --off or stop
+                                       (saved settings unchanged)
 launch_claude ttyd <id> --off          close it again; the agent keeps running
 launch_claude add <id> [options]       register only (does not start)
 launch_claude set <id> [options]       change saved settings
@@ -105,6 +136,32 @@ launch_claude forget <id>              remove the registration
 ```
 
 IDs match `^[A-Za-z0-9][A-Za-z0-9_-]*$`. These words are reserved and cannot be IDs: `all`, `start`, `stop`, `open`, `add`, `set`, `forget`, `list`, `ttyd`, `help`.
+
+The ID becomes three names: the tmux session, the Claude Code conversation and the Remote Control session. Claude Code shows that name in claude.ai, and other Claude Code sessions use it to send a message to this one. The tool prevents duplicate IDs on one machine only, so if you use several machines, choose IDs that differ between them.
+
+### Options
+
+| Option | Commands | Meaning |
+|---|---|---|
+| `--dir <path>` | `open`, `add`, `set` | Work directory. For `open` also the second argument; default: the current directory |
+| `--with-ttyd` / `--without-ttyd` | `open`, `add`, `set` | Serve the agent in the browser on every start, or tmux only. Default for a new agent: tmux only |
+| `--port <n>` | `open`, `add`, `set`, `ttyd` | ttyd port. Alone it implies `--with-ttyd`; with `--without-ttyd` it only reserves the port for a later `ttyd <id>` |
+| `--autostart` / `--no-autostart` | `open` (`--autostart` only), `add`, `set` | Whether `start --autostart` starts the agent |
+| `--mode new\|resume\|continue` | `add`, `set` | Conversation that `start` uses. Default: `new` |
+| `--resume`, `--continue` / `-c` | `open` | The same choice for this one start; the saved mode is not changed |
+| `--once` | `open` | Throwaway session: not registered, removed when claude exits |
+| `--claude-config-dir <path>` | `open`, `add`, `set` | `CLAUDE_CONFIG_DIR` for this agent, for example a second account |
+| `--stop-own-session` | `stop` | Also stop the session the command is run in |
+
+### Conversation modes
+
+| Mode | Conversation |
+|---|---|
+| `new` (default) | A new, empty one on every start. After a reboot the previous conversation is not shown |
+| `resume` | The one this tool last started in `new` mode for this ID. There is no picker and no search by name |
+| `continue` | The latest one in the work directory, whoever started it; it is then renamed to the ID. Use it for one agent per directory |
+
+`open` always starts a new conversation unless you pass `--resume` or `--continue`.
 
 Each command is described in the [reference](docs/reference.md).
 
@@ -146,18 +203,18 @@ Global settings (`config`, section `[launch_claude]`):
 |---|---|---|
 | `claude_config_dir` | not set | `CLAUDE_CONFIG_DIR` for all agents |
 | `remote_control` | `1` | Send `/remote-control <id>` after start |
-| `port_min` | `7700` | First port tried for a new agent |
-| `port_max` | `7799` | Last port tried for a new agent |
-| `ttyd_interface` | not set | Where ttyd listens (`lo`, an interface name or an IP address); all interfaces if not set |
+| `port_min` | `7700` | First port tried when an agent gets a ttyd port. The port is chosen once and saved |
+| `port_max` | `7799` | Last port tried |
+| `ttyd_interface` | not set | Where ttyd listens (`lo`, an interface name or an IP address). Not set: every interface, so reachable from the network |
 | `ttyd_credential` | not set | `user:password` for ttyd basic auth |
-| `ttyd_warning` | `1` | Warn when `ttyd <id>` opens ttyd without a password |
+| `ttyd_warning` | `1` | Warn when ttyd is started without a password on an interface other than loopback |
 
 Per-agent settings (`agents/<id>.conf`, section `[agent]`), normally written by `open` / `add` / `set`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `dir` | — | Work directory |
-| `ttyd` | `0` | `1`: serve with ttyd. `0`: tmux only |
+| `dir` | required | Work directory |
+| `ttyd` | `0` | `1`: serve with ttyd on every start. `0`: tmux only |
 | `port` | not set | ttyd port; kept and reserved also while `ttyd = 0` |
 | `mode` | `new` | Conversation used by `start`: `new`, `resume` or `continue` |
 | `autostart` | `0` | `1`: started by `start --autostart` |
@@ -165,12 +222,15 @@ Per-agent settings (`agents/<id>.conf`, section `[agent]`), normally written by 
 
 Details, notes and the exact precedence of each key are in the comments of [`examples/config.example`](examples/config.example) and [`examples/agents/example.conf`](examples/agents/example.conf). A key that is not in these tables is reported as unknown, which catches typos.
 
+Two environment variables override the file: `TTYD_CREDENTIAL` (for `ttyd_credential`) and `REMOTE_CONTROL` (for `remote_control`).
+
 ## Security
 
-- **ttyd is started without authentication unless you configure it.** Anyone who can connect to the port gets your terminal, with your permissions. Keep the ports behind a firewall or on a trusted network.
+- ttyd is only started for agents registered with `--with-ttyd` (or `ttyd = 1`) and by the `ttyd <id>` command.
+- **When ttyd is started, it has no authentication unless you configure it**, and it listens on every network interface. Anyone who can connect to the port gets your terminal, with your permissions. Keep the ports behind a firewall or on a trusted network, or set `ttyd_interface = lo`. The tool warns when it starts such a ttyd.
 - To require a password, set `TTYD_CREDENTIAL=user:password` in the environment, or `ttyd_credential` in `config` (then `chmod 600` the file; a warning is shown otherwise). It is passed to `ttyd -c`, so it is visible in the process list to other users of the same machine, and basic auth over plain HTTP is not encrypted.
-- To make an agent trusted without a prompt, the directory is marked as trusted in Claude Code's `.claude.json`. Only open directories you trust.
-- launch_claude only knows what it passes to ttyd. If you protect the port another way (reverse proxy, SSH port forward, VPN), make ttyd listen on that path only with `ttyd_interface`; see [`examples/config.reverse-proxy`](examples/config.reverse-proxy).
+- On every start, the work directory is marked as trusted in Claude Code's `.claude.json`, so that the trust dialog does not stop the start. This is automatic and cannot be turned off. Only register directories you trust.
+- launch_claude only knows what it passes to ttyd. If you protect the port another way (reverse proxy, SSH port forward, VPN), set `ttyd_interface` so that ttyd listens only where that protection applies (for example `lo` behind a proxy on the same machine); see [`examples/config.reverse-proxy`](examples/config.reverse-proxy).
 
 ## More
 
@@ -180,7 +240,7 @@ Details, notes and the exact precedence of each key are in the comments of [`exa
 
 ## Not confirmed
 
-- Whether sessions started by this tool are listed by `claude agents`
+- Whether sessions started by this tool are listed by `claude agents`, the agent view of Claude Code (see the [comparison](docs/comparison.md))
 - Whether it works on macOS
 
 ## Development

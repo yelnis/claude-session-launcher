@@ -10,7 +10,7 @@ from conftest import load_script
 ROOT = Path(__file__).resolve().parent.parent
 READMES = ["README.md", "README.ja.md"]
 DOCS = READMES + ["docs/reference.md", "docs/reference.ja.md", "docs/comparison.md",
-                  "docs/comparison.ja.md", "tests/README.md"]
+                  "docs/comparison.ja.md", "docs/ai-setup.md", "tests/README.md"]
 CONFIG_SAMPLES = sorted(p for p in (ROOT / "examples").iterdir() if p.is_file())
 AGENT_SAMPLES = sorted((ROOT / "examples" / "agents").iterdir())
 

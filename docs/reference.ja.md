@@ -11,9 +11,9 @@ launch_claude open review                  # カレントディレクトリで "
 launch_claude open review ~/work/repo      # 別のディレクトリで
 launch_claude open --resume review         # "review" の最後の会話を再開
 launch_claude open -c review               # ディレクトリの最新の会話を続けて、"review" に改名
-launch_claude open --without-ttyd review   # tmux のみ。ポートを使わない
+launch_claude open --with-ttyd review      # ブラウザの端末としても公開する。空きポートを選んで保存する
+launch_claude open --port 7710 review      # 同じことを、このポートで
 launch_claude open --without-ttyd --port 7710 review   # tmux のみ。ただしポート 7710 を取っておく
-launch_claude open --port 7710 review      # ttyd のポートを指定
 launch_claude open --once                  # 使い捨てのセッション
 launch_claude open --once --with-ttyd tmp  # ttyd と ID を付けた使い捨てのセッション
 ```
@@ -22,14 +22,16 @@ launch_claude open --once --with-ttyd tmp  # ttyd と ID を付けた使い捨�
 |---|---|
 | `--resume` | そのエージェントの最後の会話を再開する。その起動だけに効く |
 | `--continue`, `-c` | 作業ディレクトリの最新の会話を続けて、`<id>` に改名する。同じディレクトリで別のエージェントが動いているときは、エラーになる |
-| `--once` | 常に新しい会話。登録しない。`<id>` を省くと、ID は `once-HHMMSS`。既定で ttyd なし。claude の終了時に tmux と ttyd を片付ける。`--resume`、`--continue`、`--autostart` とは併用できない |
-| `--with-ttyd` / `--without-ttyd`(`--no-ttyd`) | ttyd を付ける / tmux のみ。`--without-ttyd` でも、保存済みのポートや指定したポートは残るので、あとで同じ URL を使える |
+| `--once` | 常に新しい会話。登録しない。`<id>` を省くと、ID は `once-HHMMSS`。claude の終了時に tmux と ttyd を片付ける。`--resume`、`--continue`、`--autostart` とは併用できない |
+| `--with-ttyd` / `--without-ttyd`(`--no-ttyd`) | 起動のたびに ttyd を付ける / tmux のみ。新しいエージェントの既定は、`add` でも、tmux のみ。`--without-ttyd` でも、保存済みのポートや指定したポートは残るので、あとで同じ URL を使える。ポートがなければ何も保存されず、あとの `ttyd <id>` は最初の空きポートを使う |
 | `--port <n>` | ttyd のポート。`--without-ttyd` を付けないかぎり、ttyd を付ける。既定は、`port_min`〜`port_max` の最初の空き |
 | `--dir <path>` | 作業ディレクトリ(2番目の位置引数と同じ)。既定は、カレントディレクトリ |
 | `--claude-config-dir <path>` | このエージェントだけの `CLAUDE_CONFIG_DIR`。別のアカウントを使うときなど。`default` で指定を外す。[`examples/agents/second-account.conf`](../examples/agents/second-account.conf) を参照 |
 | `--autostart` | `autostart=1` にする |
 
-- 新しい ID は、ディレクトリ・ttyd の有無・ポートとともに登録されます。URL が変わらないように、ポートを保存します。
+- 新しい ID は、ディレクトリと、ttyd を指定した場合はポートとともに登録されます。URL が変わらないように、ポートを保存します。
+- ループバック以外に向けて、ttyd 自身のパスワードなしで ttyd を起動したときは、`open` と `start` も、`ttyd` コマンドと同じ警告を表示します(1回の実行につき1度。[ttyd](#ttyd) を参照)。
+- `--mode` は、`open` のオプションではありません。指定すると、`--resume`、`--continue`、`set <id> --mode` を案内するエラーになります。
 - 登録済みの ID は、保存済みの設定で起動します。`--dir`、`--port`、`--with-ttyd` / `--without-ttyd`、`--claude-config-dir`、`--autostart` を指定すると、その値で上書きして保存し、保存したことを表示します。
 - `open` は、`--resume` も `--continue` も付けなければ、**新しい会話**で起動します。この2つは、その起動だけに効きます。`start` のときの動きは、`--mode` で保存します(下記)。
 - すでに起動中のときは、その旨を表示して、何もしません。
@@ -71,6 +73,7 @@ launch_claude ttyd review --off        # 閉じる。エージェントは動い
 ## stop / forget
 
 - `stop <id>...` は、そのエージェントの tmux と ttyd を止めます。`stop` だけだと、このツールが起動したものすべて(`--once` も含む)を止めます。登録は残ります。
+- `stop` を実行したセッション自身は止めません。セッションの中で(人や Claude Code が)入力したコマンドで、そのセッションを誤って終わらせないためです。`stop` だけのときは、ほかを止めて、残したセッションを表示します。そのセッションの ID を指定した `stop <id>` はエラーになり、何も止めません。そのセッションも止めるには、別の端末から実行するか、`--stop-own-session` を付けます。セッションは、tmux が設定する変数 `TMUX` と `TMUX_PANE` で判定します。
 - `forget <id>` は、登録と状態を削除します。先に停止してください。
 
 ## list
@@ -108,11 +111,11 @@ launch_claude start --autostart           # 今すぐ起動する(cron が実行
 
 その場かぎりの組み合わせは、`launch_claude start writer coder` のように ID を並べます。`open` で登録しただけのエージェントは、`--autostart` を付けないかぎり `autostart=0` です。
 
-ttyd の有無と autostart は別々の設定なので、ttyd なし(tmux のみ)のエージェントも autostart にできます。
+ttyd の有無と autostart は別々の設定です。ttyd なし(tmux のみ。既定)のエージェントも、ほかと同じように autostart にできます。
 
 ```bash
-launch_claude open --without-ttyd --autostart myproj   # 新しく登録する場合
-launch_claude set myproj --without-ttyd --autostart    # 登録済みのものを変える場合
+launch_claude open --autostart myproj   # 新しく登録する場合
+launch_claude set myproj --autostart    # 登録済みのものを変える場合
 ```
 
 この場合、再起動時には tmux のセッションだけが立ち上がり、ポートは使いません。`/remote-control` は ttyd と関係なく送られます。端末を直接見るときは、`tmux attach -t myproj` で入るか、`launch_claude ttyd myproj` で一時的に ttyd を開きます。保存済みのポートは、ttyd が無効の間も残るので、`--with-ttyd` で戻すと同じ URL になります。
@@ -126,4 +129,5 @@ launch_claude set myproj --without-ttyd --autostart    # 登録済みのもの�
 - 画面のコピーが難しい場合は、tmux のコピーモードや `tmux capture-pane -p -J` を使います。
 - `/remote-control` を送ると、Claude Code が確認のダイアログ(Disconnect / Show QR code / Continue)を開きます。このツールは、`Continue` が選ばれているときだけ Enter を送って閉じます。もしダイアログが残っていたら、`tmux attach -t <id>` で入って、`Continue` を選んでください。
 - 画面に `? for shortcuts` か `shift+tab to cycle` が出たら、入力待ちになったと判定します(最大60秒)。待ちに失敗したときは、警告に画面の末尾10行が含まれます。この文言が、使っている Claude Code の画面と合っているかを確認してください。
-- 起動コマンドは、tmux の既定のシェルに文字として送ります。`VAR=value command` と `||` を使うので、POSIX 系のシェル(bash、zsh など)を想定しています。
+- 起動コマンドは、tmux の既定のシェルに文字として送ります。`VAR=value command` と `||` を使うので、POSIX 系のシェル(bash、zsh、sh など)を想定しています。
+- cron から起動した場合、tmux は既定のシェルを cron の `SHELL`(ふつう `/bin/sh`)から決め、ログインシェルとして動かします。このシェルは、`~/.bashrc` ではなく `~/.profile` を読みます。`claude` は、その結果の `PATH` で見つかる必要があります。`tmux` と `ttyd` はツール自身が起動するので、cron の `PATH` にある必要があります。見つからないときは、エラーにそう表示されます。
