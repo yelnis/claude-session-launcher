@@ -29,7 +29,7 @@ import time  # noqa: E402
 import uuid  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 PROG = "launch_claude"
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
